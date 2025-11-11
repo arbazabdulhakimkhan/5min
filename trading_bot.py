@@ -9,19 +9,19 @@ import requests
 # =========================
 # CONFIG (env-driven)
 # =========================
-MODE = os.getenv("MODE", "paper").lower()                # "paper" or "live"
-EXCHANGE_ID = "kucoinfutures"                            # futures engine
+MODE = os.getenv("MODE", "paper").lower()
+EXCHANGE_ID = "kucoinfutures"
 SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "ARB/USDT:USDT,LINK/USDT:USDT,SOL/USDT:USDT,ETH/USDT:USDT,BTC/USDT:USDT").split(",") if s.strip()]
 
-ENTRY_TF = os.getenv("ENTRY_TF", "1h")
-HTF = os.getenv("HTF", "4h")
-LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "180"))
+ENTRY_TF = os.getenv("ENTRY_TF", "5m")
+HTF = os.getenv("HTF", "15m")
+LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "90"))
 
 TOTAL_PORTFOLIO_CAPITAL = float(os.getenv("TOTAL_PORTFOLIO_CAPITAL", "10000"))
 PER_COIN_ALLOCATION = float(os.getenv("PER_COIN_ALLOCATION", "0.20"))
 PER_COIN_CAP_USD = TOTAL_PORTFOLIO_CAPITAL * PER_COIN_ALLOCATION
 
-# strategy (same vibe as yours)
+# strategy
 RISK_PERCENT = float(os.getenv("RISK_PERCENT", "0.02"))
 RR_FIXED = float(os.getenv("RR_FIXED", "5.0"))
 DYNAMIC_RR = os.getenv("DYNAMIC_RR", "true").lower() == "true"
@@ -31,40 +31,42 @@ MAX_RR = float(os.getenv("MAX_RR", "6.0"))
 ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
 ATR_MULT_SL = float(os.getenv("ATR_MULT_SL", "1.5"))
 USE_ATR_STOPS = os.getenv("USE_ATR_STOPS", "true").lower() == "true"
-USE_H1_FILTER = os.getenv("USE_H1_FILTER", "true").lower() == "true"
+USE_HTF_GATE = os.getenv("USE_HTF_GATE", "true").lower() == "true"  # optional HTF gating
 
 # filters
-USE_VOLUME_FILTER = os.getenv("USE_VOLUME_FILTER", "false").lower() == "true"
+USE_VOLUME_FILTER = os.getenv("USE_VOLUME_FILTER", "true").lower() == "true"
 VOL_LOOKBACK = int(os.getenv("VOL_LOOKBACK", "20"))
-VOL_MIN_RATIO = float(os.getenv("VOL_MIN_RATIO", "0.5"))
+VOL_MIN_RATIO = float(os.getenv("VOL_MIN_RATIO", "1.0"))
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
-RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "25"))
-RSI_OVERBOUGHT = 100 - RSI_OVERSOLD
-BIAS_CONFIRM_BEAR = int(os.getenv("BIAS_CONFIRM_BEAR", "2"))
+RSI_THRESHOLD_LONG = float(os.getenv("RSI_THRESHOLD_LONG", "50"))
+RSI_THRESHOLD_SHORT = float(os.getenv("RSI_THRESHOLD_SHORT", "50"))
 COOLDOWN_HOURS = float(os.getenv("COOLDOWN_HOURS", "0.0"))
 
-# risk/fees (KuCoin taker 0.06%)
-MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "0.20"))
-MAX_TRADE_SIZE = float(os.getenv("MAX_TRADE_SIZE", "100000"))  # base cap (coins)
-SLIPPAGE_RATE = float(os.getenv("SLIPPAGE_RATE", "0.0005"))
-FEE_RATE = float(os.getenv("FEE_RATE", "0.0006"))              # 0.06% each side
-INCLUDE_FUNDING = os.getenv("INCLUDE_FUNDING", "true").lower() == "true"
-FUNDING_INTERVAL_HOURS = 8
+# FVG & PA params
+RETEST_BUFFER_PCT = float(os.getenv("RETEST_BUFFER_PCT", "0.003"))  # relative tolerance
+WICK_BODY_RATIO = float(os.getenv("WICK_BODY_RATIO", "0.6"))
 
-# telegram (separate bot for futures)
+# risk/fees
+MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "0.20"))
+MAX_TRADE_SIZE = float(os.getenv("MAX_TRADE_SIZE", "100000"))
+SLIPPAGE_RATE = float(os.getenv("SLIPPAGE_RATE", "0.0005"))
+FEE_RATE = float(os.getenv("FEE_RATE", "0.0006"))
+INCLUDE_FUNDING = os.getenv("INCLUDE_FUNDING", "true").lower() == "true"
+
+# telegram
 TELEGRAM_TOKEN_FUT = os.getenv("TELEGRAM_TOKEN_FUT", "")
 TELEGRAM_CHAT_ID_FUT = os.getenv("TELEGRAM_CHAT_ID_FUT", "")
 
-# kucoin futures keys (live only)
+# kucoin API (live only)
 API_KEY = os.getenv("KUCOIN_API_KEY", "")
 API_SECRET = os.getenv("KUCOIN_SECRET", "")
 API_PASSPHRASE = os.getenv("KUCOIN_PASSPHRASE", "")
 
 # scheduler
 SEND_DAILY_SUMMARY = os.getenv("SEND_DAILY_SUMMARY", "true").lower() == "true"
-SUMMARY_HOUR_IST = int(os.getenv("SUMMARY_HOUR", "20"))  # 8 PM IST default
+SUMMARY_HOUR_IST = int(os.getenv("SUMMARY_HOUR", "20"))
 
-SLEEP_CAP = int(os.getenv("SLEEP_CAP", "60"))  # cap large sleeps
+SLEEP_CAP = int(os.getenv("SLEEP_CAP", "60"))
 LOG_PREFIX = "[FUT-BOT]"
 
 if MODE == "live":
@@ -96,12 +98,12 @@ def get_exchange():
             "secret": API_SECRET,
             "password": API_PASSPHRASE,
             "enableRateLimit": True,
-            "options": {"defaultType": "swap"},  # ✅ perps
+            "options": {"defaultType": "swap"},
         })
     else:
         return ccxt.kucoinfutures({
             "enableRateLimit": True,
-            "options": {"defaultType": "swap"},  # ✅ perps
+            "options": {"defaultType": "swap"},
         })
 
 def timeframe_to_ms(tf: str) -> int:
@@ -128,7 +130,8 @@ def fetch_ohlcv_range(exchange, symbol, timeframe, since_ms, until_ms, limit=150
         last = newest
         if newest >= until_ms - tf_ms: break
         time.sleep(pause)
-    if not out: return pd.DataFrame(columns=["Open","High","Low","Close","Volume"])
+    if not out:
+        return pd.DataFrame(columns=["Open","High","Low","Close","Volume"])
     dedup = {r[0]: r for r in out}
     rows = [dedup[k] for k in sorted(dedup.keys()) if since_ms <= k <= until_ms]
     df = pd.DataFrame(rows, columns=["timestamp","Open","High","Low","Close","Volume"])
@@ -138,7 +141,7 @@ def fetch_ohlcv_range(exchange, symbol, timeframe, since_ms, until_ms, limit=150
         df[c] = pd.to_numeric(df[c], errors="coerce")
     return df.dropna()[["Open","High","Low","Close","Volume"]]
 
-# funding rates
+# funding
 def fetch_funding_history(exchange, symbol, since_ms, until_ms):
     rates, cursor = [], since_ms
     while cursor < until_ms:
@@ -168,7 +171,7 @@ def align_funding_to_index(idx, funding_df):
     return s
 
 # =========================
-# INDICATORS
+# INDICATORS & HELPERS
 # =========================
 def calculate_rsi(prices, period=14):
     delta = prices.diff()
@@ -188,8 +191,74 @@ def position_size_futures(price, sl, capital, risk_percent, max_trade_size):
     risk_per_trade = capital * risk_percent
     rpc = abs(price - sl)
     max_by_risk = (risk_per_trade / rpc) if rpc > 0 else 0
-    max_by_capital = capital / price  # 1x isolated
+    max_by_capital = capital / price
     return max(min(max_by_risk, max_by_capital, max_trade_size / price), 0)
+
+# ---------- SMC/FVG/PA helpers ----------
+def get_htf_structure_level(htf_df, lookback=30):
+    """
+    Rough swing detection on HTF:
+    returns last swing high and low (floats or None) plus a simple trend (1 up, -1 down, 0 flat)
+    """
+    if len(htf_df) < 4:
+        return {'trend':0, 'last_sh':None, 'last_sl':None}
+    highs = htf_df['High'].rolling(window=lookback, min_periods=1).max()
+    lows = htf_df['Low'].rolling(window=lookback, min_periods=1).min()
+    last_sh = float(highs.iloc[-2]) if not pd.isna(highs.iloc[-2]) else None
+    last_sl = float(lows.iloc[-2]) if not pd.isna(lows.iloc[-2]) else None
+    trend = 0
+    try:
+        if htf_df['Close'].iloc[-2] > htf_df['Close'].iloc[-4]:
+            trend = 1
+        elif htf_df['Close'].iloc[-2] < htf_df['Close'].iloc[-4]:
+            trend = -1
+    except Exception:
+        trend = 0
+    return {'trend':int(trend), 'last_sh': last_sh, 'last_sl': last_sl}
+
+def find_fvgs(htf_df):
+    """
+    Detect simple FVGs on HTF:
+    bullish FVG when current low > prev high  -> gap zone = (prev high, curr low)
+    bearish FVG when current high < prev low -> gap zone = (curr high, prev low)
+    returns list of dicts: {type:'bull'|'bear', 'start':low, 'end':high, 'ts_idx': index_of_gap_candle}
+    """
+    out = []
+    if len(htf_df) < 3:
+        return out
+    for i in range(1, len(htf_df)):
+        prev = htf_df.iloc[i-1]
+        curr = htf_df.iloc[i]
+        # bullish gap (imbalance)
+        if float(curr['Low']) > float(prev['High']):
+            out.append({'type':'bull', 'low': float(prev['High']), 'high': float(curr['Low']), 'idx': htf_df.index[i]})
+        # bearish gap
+        if float(curr['High']) < float(prev['Low']):
+            out.append({'type':'bear', 'low': float(curr['High']), 'high': float(prev['Low']), 'idx': htf_df.index[i]})
+    return out
+
+def price_in_zone(price, zone_low, zone_high, buffer_pct=RETEST_BUFFER_PCT):
+    if zone_low is None or zone_high is None:
+        return False
+    tol = max(zone_high * buffer_pct, 0.0005)
+    return (zone_low - tol) <= price <= (zone_high + tol)
+
+def is_bullish_engulfing(prev, curr):
+    return (prev['Close'] < prev['Open']) and (curr['Close'] > curr['Open']) and (curr['Close'] > prev['Open']) and (curr['Open'] < prev['Close'])
+
+def is_bearish_engulfing(prev, curr):
+    return (prev['Close'] > prev['Open']) and (curr['Close'] < curr['Open']) and (curr['Open'] > prev['Close']) and (curr['Close'] < prev['Open'])
+
+def has_rejection_wick(candle, direction='bull', wick_body_ratio=WICK_BODY_RATIO):
+    body = abs(candle['Close'] - candle['Open'])
+    if body == 0:
+        return False
+    if direction == 'bull':
+        lower_wick = (candle['Open'] - candle['Low']) if candle['Open'] >= candle['Close'] else (candle['Close'] - candle['Low'])
+        return (lower_wick / body) >= wick_body_ratio
+    else:
+        upper_wick = (candle['High'] - candle['Open']) if candle['Open'] <= candle['Close'] else (candle['High'] - candle['Close'])
+        return (upper_wick / body) >= wick_body_ratio
 
 # =========================
 # STATE & FILES
@@ -202,14 +271,13 @@ def load_state(state_file):
     if os.path.exists(state_file):
         with open(state_file, "r") as f:
             s = json.load(f)
-        # parse timestamps
         for k in ["entry_time", "last_processed_ts", "last_exit_time"]:
             if s.get(k):
                 s[k] = pd.to_datetime(s[k], utc=True).tz_convert(None)
         return s
     return {
         "capital": PER_COIN_CAP_USD,
-        "position": 0,                 # 0 flat, 1 long, -1 short
+        "position": 0,
         "entry_price": 0.0,
         "entry_sl": 0.0,
         "entry_tp": 0.0,
@@ -217,8 +285,7 @@ def load_state(state_file):
         "entry_size": 0.0,
         "peak_equity": PER_COIN_CAP_USD,
         "last_processed_ts": None,
-        "last_exit_time": None,
-        "bearish_count": 0
+        "last_exit_time": None
     }
 
 def save_state(state_file, state):
@@ -234,7 +301,7 @@ def append_trade(csv_file, row):
     pd.DataFrame([row]).to_csv(csv_file, mode="a", header=write_header, index=False)
 
 # =========================
-# LIVE ORDER HELPERS (used only if MODE=live)
+# LIVE ORDER HELPERS
 # =========================
 def place_market(exchange, symbol, side, amount, reduce_only=False):
     params = {"reduceOnly": True} if reduce_only else {}
@@ -257,50 +324,46 @@ def amount_to_precision(exchange, symbol, amt):
 # =========================
 # CORE PER-BAR PROCESSOR
 # =========================
-def process_bar(symbol, h1, h4, state, exchange=None, funding_series=None):
+def process_bar(symbol, etf_df, htf_df, state, exchange=None, funding_series=None):
+    """
+    etf_df : entry timeframe dataframe (already trimmed so last row is the latest closed bar)
+    htf_df : higher timeframe dataframe (last row is latest closed bar)
+    """
+    etf = etf_df.copy(); htf = htf_df.copy()
+
     # indicators
-    h1 = h1.copy(); h4 = h4.copy()
-    h1['Bias'] = 0
-    h1.loc[h1['Close'] > h1['Close'].shift(1), 'Bias'] = 1
-    h1.loc[h1['Close'] < h1['Close'].shift(1), 'Bias'] = -1
-
-    h4['Trend'] = 0
-    h4.loc[h4['Close'] > h4['Close'].shift(1), 'Trend'] = 1
-    h4.loc[h4['Close'] < h4['Close'].shift(1), 'Trend'] = -1
-
-    h1['H4_Trend'] = h4['Trend'].reindex(h1.index, method='ffill').fillna(0).astype(int)
-
     if USE_ATR_STOPS:
-        h1['ATR'] = calculate_atr(h1, ATR_PERIOD)
+        etf['ATR'] = calculate_atr(etf, ATR_PERIOD)
     if USE_VOLUME_FILTER:
-        h1['Avg_Volume'] = h1['Volume'].rolling(VOL_LOOKBACK).mean()
-    h1['RSI'] = calculate_rsi(h1['Close'], RSI_PERIOD)
+        etf['Avg_Volume'] = etf['Volume'].rolling(VOL_LOOKBACK).mean()
+    etf['RSI'] = calculate_rsi(etf['Close'], RSI_PERIOD)
 
-    # entry signals (last closed bar only)
-    i = len(h1) - 1
-    curr = h1.iloc[i]
-    prev_close = h1['Close'].iloc[i-1] if i >= 1 else curr['Close']
-    price = float(curr['Close']); open_price = float(curr['Open'])
-    bias = int(curr['Bias']); h4t = int(curr['H4_Trend'])
-    ts = h1.index[i]
+    # pick last closed bar (we assume etf_df passed excludes the realtime bar)
+    i = len(etf) - 1
+    if i < 1:
+        return state, None
 
-    # funding at this bar (if we were holding)
+    curr = etf.iloc[i]
+    prev = etf.iloc[i-1]
+    price = float(curr['Close'])
+    ts = etf.index[i]
+
+    # funding impact when holding
     if INCLUDE_FUNDING and state["position"] != 0 and funding_series is not None:
         rate = float(funding_series.iloc[i]) if i < len(funding_series) else 0.0
         if rate != 0.0 and state["entry_price"] and state["entry_size"]:
             notional = abs(state["entry_price"] * state["entry_size"])
-            # longs pay when rate>0; shorts receive. (PnL impact negative when you pay).
             fee = notional * rate * (1 if state["position"] == 1 else -1) * (-1)
             state["capital"] += fee
 
-    # drawdown stop
+    # update peak equity
     state["peak_equity"] = max(state["peak_equity"], state["capital"])
     if state["peak_equity"] > 0:
         dd = (state["peak_equity"] - state["capital"]) / state["peak_equity"]
     else:
         dd = 0.0
+    # forced exit on global drawdown
     if dd >= MAX_DRAWDOWN and state["position"] != 0:
-        # force close at price
         side = "sell" if state["position"] == 1 else "buy"
         exit_price = price
         if MODE == "live":
@@ -320,49 +383,26 @@ def process_bar(symbol, h1, h4, state, exchange=None, funding_series=None):
             "Take_Profit": round(state["entry_tp"],6), "Stop_Loss": round(state["entry_sl"],6),
             "Position_Size_Base": round(state["entry_size"],8),
             "PnL_$": round(pnl,2), "Win": 1 if pnl>0 else 0,
-            "Exit_Reason": "MAX DRAWDOWN", "Capital_After": round(state["capital"],2), "Mode": MODE
+            "Exit_Reason": "MAX_DRAWDOWN", "Capital_After": round(state["capital"],2), "Mode": MODE
         }
-        # reset
-        state.update({"position":0,"entry_price":0.0,"entry_sl":0.0,"entry_tp":0.0,"entry_time":None,"entry_size":0.0,"bearish_count":0})
+        state.update({"position":0,"entry_price":0.0,"entry_sl":0.0,"entry_tp":0.0,"entry_time":None,"entry_size":0.0})
         return state, row
 
     trade_row = None
 
-    # ===== EXIT LOGIC (close-based) =====
+    # ===== EXIT logic: only SL or TP (no HTF/bias reversal exits) =====
     if state["position"] != 0:
         exit_flag = False; exit_reason = ""; exit_price = price
         if state["position"] == 1:
             if price >= state["entry_tp"]:
                 exit_flag, exit_price, exit_reason = True, state["entry_tp"], "Take Profit"
-                state["bearish_count"] = 0
             elif price <= state["entry_sl"]:
                 exit_flag, exit_price, exit_reason = True, state["entry_sl"], "Stop Loss"
-                state["bearish_count"] = 0
-            elif USE_H1_FILTER and (h4t < 0 and bias < 0):
-                exit_flag, exit_price, exit_reason = True, price, "4H Trend Reversal"
-            elif bias < 0:
-                state["bearish_count"] += 1
-                if state["bearish_count"] >= BIAS_CONFIRM_BEAR:
-                    exit_flag, exit_price, exit_reason = True, price, "Bias Reversal"
-                    state["bearish_count"] = 0
-            else:
-                state["bearish_count"] = 0
         else:
             if price <= state["entry_tp"]:
                 exit_flag, exit_price, exit_reason = True, state["entry_tp"], "Take Profit"
-                state["bearish_count"] = 0
             elif price >= state["entry_sl"]:
                 exit_flag, exit_price, exit_reason = True, state["entry_sl"], "Stop Loss"
-                state["bearish_count"] = 0
-            elif USE_H1_FILTER and (h4t > 0 and bias > 0):
-                exit_flag, exit_price, exit_reason = True, price, "4H Trend Reversal"
-            elif bias > 0:
-                state["bearish_count"] += 1
-                if state["bearish_count"] >= BIAS_CONFIRM_BEAR:
-                    exit_flag, exit_price, exit_reason = True, price, "Bias Reversal"
-                    state["bearish_count"] = 0
-            else:
-                state["bearish_count"] = 0
 
         if exit_flag:
             side = "sell" if state["position"]==1 else "buy"
@@ -386,61 +426,101 @@ def process_bar(symbol, h1, h4, state, exchange=None, funding_series=None):
                 "PnL_$": round(pnl,2), "Win": 1 if pnl>0 else 0,
                 "Exit_Reason": exit_reason, "Capital_After": round(state["capital"],2), "Mode": MODE
             }
+            # reset position
             state.update({"position":0,"entry_price":0.0,"entry_sl":0.0,"entry_tp":0.0,"entry_time":None,"entry_size":0.0})
+            send_telegram_fut(f"{'💚' if pnl>0 else '🔴'} EXIT {symbol} {exit_reason} @ {exit_price:.4f} | PnL ${pnl:.2f}")
 
-            emoji = "💚" if pnl>0 else "❤️"
-            send_telegram_fut(f"{emoji} EXIT {symbol} {exit_reason} @ {exit_price:.4f} | PnL ${pnl:.2f}")
-
-    # ===== ENTRY LOGIC (mirror long/short) =====
+    # ===== ENTRY logic: require HTF structure or FVG + retest + PA confirmation =====
     if state["position"] == 0:
         # cooldown
-        if COOLDOWN_HOURS>0 and state.get("last_exit_time") is not None:
-            if (ts - state["last_exit_time"]).total_seconds()/3600 < COOLDOWN_HOURS:
+        if COOLDOWN_HOURS > 0 and state.get("last_exit_time") is not None:
+            if (ts - state["last_exit_time"]).total_seconds() / 3600 < COOLDOWN_HOURS:
                 state["last_processed_ts"] = ts
                 return state, trade_row
 
-        bullish_sweep = (price > open_price) and (price > prev_close)
-        bearish_sweep = (price < open_price) and (price < prev_close)
+        # need at least 2 ET bars and some HTF history
+        if len(etf) < 3 or len(htf) < 3:
+            state["last_processed_ts"] = ts
+            return state, trade_row
 
-        vol_ok_long = True
-        vol_ok_short = True
-        if USE_VOLUME_FILTER and not pd.isna(h1['Volume'].iloc[i]):
-            avgv = h1['Volume'].rolling(VOL_LOOKBACK).mean().iloc[i]
+        # HTF structure + FVG
+        struct = get_htf_structure_level(htf, lookback=30)
+        fvgs = find_fvgs(htf)
+
+        # stricter volume and RSI checks
+        vol_ok_long = vol_ok_short = True
+        if USE_VOLUME_FILTER and not pd.isna(etf['Volume'].iloc[i]):
+            avgv = etf['Volume'].rolling(VOL_LOOKBACK).mean().iloc[i]
             if not pd.isna(avgv):
-                vol_ok_long = h1['Volume'].iloc[i] >= VOL_MIN_RATIO * avgv
-                vol_ok_short = vol_ok_long  # same logic
+                vol_ok_long = etf['Volume'].iloc[i] >= VOL_MIN_RATIO * avgv
+                vol_ok_short = vol_ok_long
 
-        rsi = float(h1['RSI'].iloc[i]) if not pd.isna(h1['RSI'].iloc[i]) else None
-        rsi_ok_long = True if rsi is None else rsi > RSI_OVERSOLD
-        rsi_ok_short = True if rsi is None else rsi < RSI_OVERBOUGHT
+        rsi = float(etf['RSI'].iloc[i]) if not pd.isna(etf['RSI'].iloc[i]) else None
+        rsi_ok_long = True if rsi is None else rsi > RSI_THRESHOLD_LONG
+        rsi_ok_short = True if rsi is None else rsi < RSI_THRESHOLD_SHORT
 
-        long_ok  = bullish_sweep and vol_ok_long  and rsi_ok_long  and ((not USE_H1_FILTER) or h4t == 1)
-        short_ok = bearish_sweep and vol_ok_short and rsi_ok_short and ((not USE_H1_FILTER) or h4t == -1)
+        # price-action confirmation on the last closed candle (curr) using prev candle as context
+        prevc = etf.iloc[i-1]
+        currc = etf.iloc[i]
+
+        pa_confirm_long = (is_bullish_engulfing(prevc, currc) or has_rejection_wick(currc, direction='bull', wick_body_ratio=WICK_BODY_RATIO))
+        pa_confirm_short = (is_bearish_engulfing(prevc, currc) or has_rejection_wick(currc, direction='bear', wick_body_ratio=WICK_BODY_RATIO))
+
+        # check retest into most recent relevant HTF FVG (if any) OR retest into last HTF swing level
+        retest_long = False
+        retest_short = False
+
+        # prefer FVG retest if present
+        for z in reversed(fvgs):
+            if z['type'] == 'bull':
+                if price_in_zone(price, z['low'], z['high']):
+                    retest_long = True; break
+            if z['type'] == 'bear':
+                if price_in_zone(price, z['low'], z['high']):
+                    retest_short = True; break
+
+        # fallback: retest into last HTF swing low/high (SMC retest)
+        if not retest_long and struct.get('last_sl') is not None:
+            retest_long = price_in_zone(price, struct['last_sl'] * (1 - 0.0000001), struct['last_sl'] * (1 + 0.0000001))  # tiny tolerance -> will be handled by price_in_zone with buffer
+            # note: price_in_zone adds buffer_pct
+            if not retest_long:
+                retest_long = price_in_zone(price, struct['last_sl'] * (1 - RETEST_BUFFER_PCT), struct['last_sl'] * (1 + RETEST_BUFFER_PCT))
+
+        if not retest_short and struct.get('last_sh') is not None:
+            retest_short = price_in_zone(price, struct['last_sh'] * (1 - RETEST_BUFFER_PCT), struct['last_sh'] * (1 + RETEST_BUFFER_PCT))
+
+        # optional HTF gating: require HTF trend to match entry direction if enabled
+        htf_trend = struct.get('trend', 0)
+        htf_gate_long = (not USE_HTF_GATE) or (htf_trend == 1)
+        htf_gate_short = (not USE_HTF_GATE) or (htf_trend == -1)
+
+        long_ok = retest_long and pa_confirm_long and vol_ok_long and rsi_ok_long and htf_gate_long
+        short_ok = retest_short and pa_confirm_short and vol_ok_short and rsi_ok_short and htf_gate_short
 
         signal = 1 if long_ok else (-1 if short_ok else 0)
 
-        if signal != 0 and (not USE_ATR_STOPS or (USE_ATR_STOPS and not pd.isna(h1['ATR'].iloc[i]) and h1['ATR'].iloc[i] > 0)):
+        if signal != 0 and (not USE_ATR_STOPS or (USE_ATR_STOPS and not pd.isna(etf['ATR'].iloc[i]) and etf['ATR'].iloc[i] > 0)):
             if signal == 1:
-                sl = price - (ATR_MULT_SL * h1['ATR'].iloc[i]) if USE_ATR_STOPS else price * (1 - min(max(price*0.0005,0.0005),0.0015))
+                sl = price - (ATR_MULT_SL * etf['ATR'].iloc[i]) if USE_ATR_STOPS else price * (1 - min(max(price*0.0005,0.0005),0.0015))
                 risk = abs(price - sl)
                 rr = RR_FIXED
                 if DYNAMIC_RR and USE_ATR_STOPS and i >= 6:
-                    recent = float(h1['ATR'].iloc[i-5:i].mean())
-                    curr = float(h1['ATR'].iloc[i])
+                    recent = float(etf['ATR'].iloc[i-5:i].mean())
+                    curr_atr = float(etf['ATR'].iloc[i])
                     if recent > 0:
-                        if curr > recent*1.2: rr = MIN_RR
-                        elif curr < recent*0.8: rr = MAX_RR
+                        if curr_atr > recent*1.2: rr = MIN_RR
+                        elif curr_atr < recent*0.8: rr = MAX_RR
                 tp = price + rr * risk
             else:
-                sl = price + (ATR_MULT_SL * h1['ATR'].iloc[i]) if USE_ATR_STOPS else price * (1 + min(max(price*0.0005,0.0005),0.0015))
+                sl = price + (ATR_MULT_SL * etf['ATR'].iloc[i]) if USE_ATR_STOPS else price * (1 + min(max(price*0.0005,0.0005),0.0015))
                 risk = abs(sl - price)
                 rr = RR_FIXED
                 if DYNAMIC_RR and USE_ATR_STOPS and i >= 6:
-                    recent = float(h1['ATR'].iloc[i-5:i].mean())
-                    curr = float(h1['ATR'].iloc[i])
+                    recent = float(etf['ATR'].iloc[i-5:i].mean())
+                    curr_atr = float(etf['ATR'].iloc[i])
                     if recent > 0:
-                        if curr > recent*1.2: rr = MIN_RR
-                        elif curr < recent*0.8: rr = MAX_RR
+                        if curr_atr > recent*1.2: rr = MIN_RR
+                        elif curr_atr < recent*0.8: rr = MAX_RR
                 tp = price - rr * risk
 
             if risk > 0:
@@ -456,7 +536,6 @@ def process_bar(symbol, h1, h4, state, exchange=None, funding_series=None):
                             if ep is not None: entry_price_used = float(ep)
                         except Exception as e:
                             send_telegram_fut(f"❌ {symbol} entry failed: {e}")
-                            # skip if failed live order
                             state["last_processed_ts"] = ts
                             return state, trade_row
 
@@ -466,7 +545,6 @@ def process_bar(symbol, h1, h4, state, exchange=None, funding_series=None):
                     state["entry_tp"] = tp
                     state["entry_time"] = ts
                     state["entry_size"] = size
-                    state["bearish_count"] = 0
 
                     pos_val = abs(entry_price_used * size)
                     state["capital"] -= pos_val*SLIPPAGE_RATE
@@ -475,12 +553,13 @@ def process_bar(symbol, h1, h4, state, exchange=None, funding_series=None):
                     tag = "LONG" if signal==1 else "SHORT"
                     send_telegram_fut(f"🚀 ENTRY {symbol} {tag} @ {entry_price_used:.4f} | SL {sl:.4f} | TP {tp:.4f} | RR {rr:.1f}")
 
+    # update processed ts
     state["last_processed_ts"] = ts
     state["peak_equity"] = max(state["peak_equity"], state["capital"])
     return state, trade_row
 
 # =========================
-# WORKER THREAD (one per symbol)
+# WORKER (one per symbol)
 # =========================
 def worker(symbol):
     state_file, trades_csv = state_files_for_symbol(symbol)
@@ -495,32 +574,35 @@ def worker(symbol):
             since = now - timedelta(days=LOOKBACK_DAYS)
             since_ms = int(since.timestamp()*1000); until_ms = int(now.timestamp()*1000)
 
-            h1 = fetch_ohlcv_range(exchange, symbol, ENTRY_TF, since_ms, until_ms)
-            h4 = fetch_ohlcv_range(exchange, symbol, HTF, since_ms, until_ms)
-            if h1.empty or h4.empty or len(h1) < 3:
+            etf = fetch_ohlcv_range(exchange, symbol, ENTRY_TF, since_ms, until_ms)
+            htf = fetch_ohlcv_range(exchange, symbol, HTF, since_ms, until_ms)
+            if etf.empty or htf.empty or len(etf) < 3:
                 time.sleep(30); continue
 
-            # act on last CLOSED bar
-            closed_ts = h1.index[-2]
+            # act on last CLOSED bar (we use -2 index as last closed; we'll pass data trimmed to exclude realtime)
+            closed_ts = etf.index[-2]
             if state["last_processed_ts"] is not None and pd.to_datetime(state["last_processed_ts"]) >= closed_ts:
-                # wait till next hour
-                time.sleep(30); continue
+                time.sleep(10); continue
+
+            # prepare trimmed dfs so last row is last closed bar
+            etf_trim = etf.iloc[:-1]  # exclude current forming bar
+            htf_trim = htf.iloc[:-1]
 
             funding_series = None
             if INCLUDE_FUNDING:
-                fdf = fetch_funding_history(exchange, symbol, int(h1.index[0].timestamp()*1000), int(h1.index[-1].timestamp()*1000))
-                funding_series = align_funding_to_index(h1.index, fdf)
+                fdf = fetch_funding_history(exchange, symbol, int(etf_trim.index[0].timestamp()*1000), int(etf_trim.index[-1].timestamp()*1000))
+                funding_series = align_funding_to_index(etf_trim.index, fdf)
 
-            state, trade = process_bar(symbol, h1.iloc[:-1], h4.iloc[:-1], state, exchange=exchange, funding_series=funding_series)
+            state, trade = process_bar(symbol, etf_trim, htf_trim, state, exchange=exchange, funding_series=funding_series)
             if trade is not None:
                 append_trade(trades_csv, trade)
 
             save_state(state_file, state)
 
-            # sleep to just after next bar close (hourly cadence)
-            next_close = h1.index[-1] + (h1.index[-1] - h1.index[-2])
+            # sleep to just after next bar close (ENTRY_TF cadence)
+            next_close = etf.index[-1] + (etf.index[-1] - etf.index[-2])
             sleep_sec = (next_close - datetime.now(timezone.utc)).total_seconds() + 5
-            if sleep_sec < 10: sleep_sec = 10
+            if sleep_sec < 5: sleep_sec = 5
             if sleep_sec > 3600: sleep_sec = SLEEP_CAP
             time.sleep(sleep_sec)
 
@@ -531,26 +613,24 @@ def worker(symbol):
             print(msg)
             traceback.print_exc()
             send_telegram_fut(msg)
-            time.sleep(60)
+            time.sleep(30)
 
 # =========================
-# DAILY SUMMARY (IST 20:00)
+# DAILY SUMMARY (IST)
 # =========================
 def ist_now():
-    # Asia/Kolkata = UTC+5:30; represent as fixed offset
     return datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
 def generate_daily_summary():
     try:
         now_ist = ist_now()
-        today_ist = now_ist.date()
-        start_ist = datetime(now_ist.year, now_ist.month, now_ist.day, 0, 0, 0, tzinfo=now_ist.tzinfo)
-        end_ist   = datetime(now_ist.year, now_ist.month, now_ist.day, 23, 59, 59, tzinfo=now_ist.tzinfo)
+        start_ist = datetime(now_ist.year, now_ist.month, now_ist.day, 0,0,0, tzinfo=now_ist.tzinfo)
+        end_ist = datetime(now_ist.year, now_ist.month, now_ist.day, 23,59,59, tzinfo=now_ist.tzinfo)
         start_utc = start_ist.astimezone(timezone.utc).replace(tzinfo=None)
-        end_utc   = end_ist.astimezone(timezone.utc).replace(tzinfo=None)
+        end_utc = end_ist.astimezone(timezone.utc).replace(tzinfo=None)
 
         lines = [f"📊 FUTURES DAILY SUMMARY — {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}", "-"*60]
-        total_cap, total_init, pnl_today, n_today, w_today = 0.0, 0.0, 0.0, 0, 0
+        total_cap = total_init = pnl_today = n_today = w_today = 0.0
 
         for sym in SYMBOLS:
             state_file, trades_csv = state_files_for_symbol(sym)
@@ -599,7 +679,7 @@ def summary_scheduler():
                 generate_daily_summary()
                 last_sent_date = now.date()
             time.sleep(60)
-        except Exception as e:
+        except Exception:
             time.sleep(60)
 
 # =========================
@@ -614,7 +694,7 @@ Symbols: {", ".join(SYMBOLS)}
 TF: {ENTRY_TF}/{HTF}
 Cap/coin: ${PER_COIN_CAP_USD:,.2f}
 Risk: {RISK_PERCENT*100:.1f}% | Fee: {FEE_RATE*100:.3f}% | Slippage: {SLIPPAGE_RATE*100:.3f}%
-Funding: {"ON" if INCLUDE_FUNDING else "OFF"}
+FVG + SMC + PA entry, exits: SL/TP only
 """
     print(boot)
     send_telegram_fut(boot)
