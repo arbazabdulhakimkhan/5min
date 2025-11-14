@@ -774,8 +774,8 @@ def generate_daily_summary():
                     today = df[(df['Exit_DateTime'] >= start_utc) & (df['Exit_DateTime'] <= end_utc)]
                     n_trades_today = len(today)
                     wins_today = int(today['Win'].sum()) if n_trades_today else 0
-                    pnl_today_sym = float(today['PnL_].sum()) if n_trades_today else 0.0
-                    pnl_all = float(df['PnL_].sum())
+                    pnl_today_sym = float(today['PnL_$'].sum()) if n_trades_today else 0.0
+                    pnl_all = float(df['PnL_$'].sum())
                     wins = int(df['Win'].sum()); losses = len(df)-wins
                     wr = (wins/len(df)*100) if len(df) else 0.0
 
@@ -851,3 +851,4 @@ Exits: SL/TP only
 
 if __name__ == "__main__":
     main()
+
