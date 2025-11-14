@@ -33,24 +33,24 @@ ATR_MULT_SL = float(os.getenv("ATR_MULT_SL", "1.5"))
 USE_ATR_STOPS = os.getenv("USE_ATR_STOPS", "true").lower() == "true"
 USE_HTF_GATE = os.getenv("USE_HTF_GATE", "true").lower() == "true"
 
-# filters - UPDATED FOR LESS FALSE SIGNALS
+# filters
 USE_VOLUME_FILTER = os.getenv("USE_VOLUME_FILTER", "true").lower() == "true"
 VOL_LOOKBACK = int(os.getenv("VOL_LOOKBACK", "20"))
-VOL_MIN_RATIO = float(os.getenv("VOL_MIN_RATIO", "1.2"))  # UPDATED: 1.0 -> 1.2
+VOL_MIN_RATIO = float(os.getenv("VOL_MIN_RATIO", "1.2"))
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
-RSI_THRESHOLD_LONG = float(os.getenv("RSI_THRESHOLD_LONG", "45"))  # UPDATED: 50 -> 45
-RSI_THRESHOLD_SHORT = float(os.getenv("RSI_THRESHOLD_SHORT", "55"))  # UPDATED: 50 -> 55
+RSI_THRESHOLD_LONG = float(os.getenv("RSI_THRESHOLD_LONG", "45"))
+RSI_THRESHOLD_SHORT = float(os.getenv("RSI_THRESHOLD_SHORT", "55"))
 COOLDOWN_HOURS = float(os.getenv("COOLDOWN_HOURS", "0.0"))
 
-# FVG & PA params - UPDATED FOR LESS FALSE SIGNALS
-RETEST_BUFFER_PCT = float(os.getenv("RETEST_BUFFER_PCT", "0.0015"))  # UPDATED: 0.003 -> 0.0015
-WICK_BODY_RATIO = float(os.getenv("WICK_BODY_RATIO", "1.5"))  # UPDATED: 0.6 -> 1.5
-MIN_FVG_GAP_PCT = float(os.getenv("MIN_FVG_GAP_PCT", "0.002"))  # NEW: minimum 0.2% gap
-FVG_MAX_AGE_BARS = int(os.getenv("FVG_MAX_AGE_BARS", "20"))  # NEW: FVG expiry
-MIN_CONFLUENCE = int(os.getenv("MIN_CONFLUENCE", "4"))  # NEW: require 4/5 factors
-SWING_STRENGTH = int(os.getenv("SWING_STRENGTH", "2"))  # NEW: swing detection bars
+# SMC/FVG/PA
+RETEST_BUFFER_PCT = float(os.getenv("RETEST_BUFFER_PCT", "0.0015"))
+WICK_BODY_RATIO = float(os.getenv("WICK_BODY_RATIO", "1.5"))
+MIN_FVG_GAP_PCT = float(os.getenv("MIN_FVG_GAP_PCT", "0.002"))
+FVG_MAX_AGE_BARS = int(os.getenv("FVG_MAX_AGE_BARS", "20"))
+MIN_CONFLUENCE = int(os.getenv("MIN_CONFLUENCE", "4"))
+SWING_STRENGTH = int(os.getenv("SWING_STRENGTH", "2"))
 
-# risk/fees
+# risk
 MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "0.20"))
 MAX_TRADE_SIZE = float(os.getenv("MAX_TRADE_SIZE", "100000"))
 SLIPPAGE_RATE = float(os.getenv("SLIPPAGE_RATE", "0.0005"))
@@ -61,16 +61,15 @@ INCLUDE_FUNDING = os.getenv("INCLUDE_FUNDING", "true").lower() == "true"
 TELEGRAM_TOKEN_FUT = os.getenv("TELEGRAM_TOKEN_FUT", "")
 TELEGRAM_CHAT_ID_FUT = os.getenv("TELEGRAM_CHAT_ID_FUT", "")
 
-# kucoin API (live only)
+# kucoin API
 API_KEY = os.getenv("KUCOIN_API_KEY", "")
 API_SECRET = os.getenv("KUCOIN_SECRET", "")
 API_PASSPHRASE = os.getenv("KUCOIN_PASSPHRASE", "")
 
-# scheduler
 SEND_DAILY_SUMMARY = os.getenv("SEND_DAILY_SUMMARY", "true").lower() == "true"
 SUMMARY_HOUR_IST = int(os.getenv("SUMMARY_HOUR", "20"))
-
 SLEEP_CAP = int(os.getenv("SLEEP_CAP", "60"))
+
 LOG_PREFIX = "[FUT-BOT]"
 
 if MODE == "live":
@@ -78,7 +77,7 @@ if MODE == "live":
         raise ValueError("Live mode requires KUCOIN_API_KEY, KUCOIN_SECRET, KUCOIN_PASSPHRASE")
 
 # =========================
-# TELEGRAM helpers
+# TELEGRAM helper
 # =========================
 def send_telegram_fut(msg: str):
     if not TELEGRAM_TOKEN_FUT or not TELEGRAM_CHAT_ID_FUT:
@@ -139,13 +138,13 @@ def fetch_ohlcv_range(exchange, symbol, timeframe, since_ms, until_ms, limit=150
     dedup = {r[0]: r for r in out}
     rows = [dedup[k] for k in sorted(dedup.keys()) if since_ms <= k <= until_ms]
     df = pd.DataFrame(rows, columns=["timestamp","Open","High","Low","Close","Volume"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).dt.tz_convert(None)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     df.set_index("timestamp", inplace=True)
     for c in ["Open","High","Low","Close","Volume"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     return df.dropna()[["Open","High","Low","Close","Volume"]]
 
-# funding
+# funding helpers
 def fetch_funding_history(exchange, symbol, since_ms, until_ms):
     rates, cursor = [], since_ms
     while cursor < until_ms:
@@ -153,34 +152,40 @@ def fetch_funding_history(exchange, symbol, since_ms, until_ms):
             page = exchange.fetchFundingRateHistory(symbol, since=cursor, limit=1000)
         except Exception as e:
             print("Funding history error:", e); break
-        if not page: break
-        rates += page
+        if not page:
+            break
+        rates.extend(page)
         newest = page[-1]['timestamp']
         if newest <= cursor: break
         cursor = newest + 1
         time.sleep(0.1)
     if not rates:
         return pd.DataFrame(columns=["rate"])
-    df = pd.DataFrame([{"ts": r['timestamp'], "rate": float(r.get('fundingRate', r.get('info',{}).get('fundingRate', 0.0)))} for r in rates])
-    df["timestamp"] = pd.to_datetime(df["ts"], unit="ms", utc=True).dt.tz_convert(None)
+    df = pd.DataFrame([{
+        "ts": r['timestamp'],
+        "rate": float(r.get('fundingRate', r.get('info', {}).get('fundingRate', 0.0)))
+    } for r in rates])
+    df["timestamp"] = pd.to_datetime(df["ts"], unit="ms")
     df = df.drop(columns=["ts"]).set_index("timestamp").sort_index()
     return df[~df.index.duplicated(keep="last")]
 
 def align_funding_to_index(idx, funding_df):
     s = pd.Series(0.0, index=idx)
-    if funding_df is None or funding_df.empty: return s
+    if funding_df is None or funding_df.empty:
+        return s
     for ts, row in funding_df.iterrows():
         j = s.index.searchsorted(ts)
-        if j < len(s): s.iloc[j] = row["rate"]
+        if j < len(s):
+            s.iloc[j] = row["rate"]
     return s
 
 # =========================
-# INDICATORS & HELPERS
+# INDICATORS
 # =========================
 def calculate_rsi(prices, period=14):
     delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
@@ -198,156 +203,115 @@ def position_size_futures(price, sl, capital, risk_percent, max_trade_size):
     max_by_capital = capital / price
     return max(min(max_by_risk, max_by_capital, max_trade_size / price), 0)
 
-# ---------- UPDATED SMC/FVG/PA helpers ----------
+# =========================
+# SMC + FVG + Price Action
+# =========================
 def get_htf_structure_level(htf_df, lookback=30, swing_strength=SWING_STRENGTH):
-    """
-    UPDATED: Proper swing high/low detection with trend confirmation.
-    Swing = high/low that is higher/lower than N bars on each side.
-    Trend = higher highs + higher lows OR lower highs + lower lows.
-    """
     if len(htf_df) < swing_strength * 2 + 1:
         return {'trend':0, 'last_sh':None, 'last_sl':None}
-    
-    swing_highs = []
-    swing_lows = []
-    
-    # Detect swing points (higher/lower than N bars on each side)
+
+    swing_highs, swing_lows = [], []
+
     for i in range(swing_strength, len(htf_df) - swing_strength):
-        # Swing high: higher than all bars within swing_strength distance
-        is_swing_high = all(
-            htf_df['High'].iloc[i] > htf_df['High'].iloc[i-j] and
+        is_sh = all(
+            htf_df['High'].iloc[i] > htf_df['High'].iloc[i-j] and 
             htf_df['High'].iloc[i] > htf_df['High'].iloc[i+j]
-            for j in range(1, swing_strength + 1)
+            for j in range(1, swing_strength+1)
         )
-        if is_swing_high:
+        if is_sh:
             swing_highs.append((htf_df.index[i], float(htf_df['High'].iloc[i])))
-        
-        # Swing low: lower than all bars within swing_strength distance
-        is_swing_low = all(
-            htf_df['Low'].iloc[i] < htf_df['Low'].iloc[i-j] and
+
+        is_sl = all(
+            htf_df['Low'].iloc[i] < htf_df['Low'].iloc[i-j] and 
             htf_df['Low'].iloc[i] < htf_df['Low'].iloc[i+j]
-            for j in range(1, swing_strength + 1)
+            for j in range(1, swing_strength+1)
         )
-        if is_swing_low:
+        if is_sl:
             swing_lows.append((htf_df.index[i], float(htf_df['Low'].iloc[i])))
-    
+
     last_sh = swing_highs[-1][1] if swing_highs else None
     last_sl = swing_lows[-1][1] if swing_lows else None
-    
-    # Determine trend: require higher highs + higher lows OR lower highs + lower lows
+
     trend = 0
     if len(swing_highs) >= 2 and len(swing_lows) >= 2:
-        hh = swing_highs[-1][1] > swing_highs[-2][1]  # higher high
-        hl = swing_lows[-1][1] > swing_lows[-2][1]    # higher low
-        lh = swing_highs[-1][1] < swing_highs[-2][1]  # lower high
-        ll = swing_lows[-1][1] < swing_lows[-2][1]    # lower low
-        
-        if hh and hl:
-            trend = 1  # Uptrend
-        elif lh and ll:
-            trend = -1  # Downtrend
-    
-    return {'trend': int(trend), 'last_sh': last_sh, 'last_sl': last_sl}
+        hh = swing_highs[-1][1] > swing_highs[-2][1]
+        hl = swing_lows[-1][1] > swing_lows[-2][1]
+        lh = swing_highs[-1][1] < swing_highs[-2][1]
+        ll = swing_lows[-1][1] < swing_lows[-2][1]
+        if hh and hl: trend = 1
+        elif lh and ll: trend = -1
+
+    return {"trend":trend, "last_sh":last_sh, "last_sl":last_sl}
 
 def find_fvgs(htf_df, min_gap_pct=MIN_FVG_GAP_PCT):
-    """
-    UPDATED: Detect FVGs with minimum gap size filter.
-    Only creates FVG if gap is at least min_gap_pct (default 0.2%).
-    bullish FVG when current low > prev high  -> gap zone = (prev high, curr low)
-    bearish FVG when current high < prev low -> gap zone = (curr high, prev low)
-    """
-    out = []
-    if len(htf_df) < 3:
+    out=[]
+    if len(htf_df)<3:
         return out
-    
-    for i in range(1, len(htf_df)):
-        prev = htf_df.iloc[i-1]
-        curr = htf_df.iloc[i]
-        
-        # Bullish FVG: current low > previous high (gap up)
-        if float(curr['Low']) > float(prev['High']):
-            gap_size = (curr['Low'] - prev['High']) / prev['High']
-            if gap_size >= min_gap_pct:  # Only significant gaps
-                out.append({
-                    'type': 'bull',
-                    'low': float(prev['High']),
-                    'high': float(curr['Low']),
-                    'idx': htf_df.index[i]
-                })
-        
-        # Bearish FVG: current high < previous low (gap down)
-        if float(curr['High']) < float(prev['Low']):
-            gap_size = (prev['Low'] - curr['High']) / curr['High']
-            if gap_size >= min_gap_pct:
-                out.append({
-                    'type': 'bear',
-                    'low': float(curr['High']),
-                    'high': float(prev['Low']),
-                    'idx': htf_df.index[i]
-                })
-    
+
+    for i in range(1,len(htf_df)):
+        prev=htf_df.iloc[i-1]
+        curr=htf_df.iloc[i]
+
+        if float(curr["Low"]) > float(prev["High"]):
+            gap=(curr["Low"]-prev["High"])/prev["High"]
+            if gap >= min_gap_pct:
+                out.append({"type":"bull","low":float(prev["High"]),"high":float(curr["Low"]),"idx":htf_df.index[i]})
+
+        if float(curr["High"]) < float(prev["Low"]):
+            gap=(prev["Low"]-curr["High"])/curr["High"]
+            if gap >= min_gap_pct:
+                out.append({"type":"bear","low":float(curr["High"]),"high":float(prev["Low"]),"idx":htf_df.index[i]})
+
     return out
 
 def filter_recent_fvgs(fvgs, current_ts, htf_timeframe, max_age_bars=FVG_MAX_AGE_BARS):
-    """
-    NEW: Only consider recent FVGs (last N HTF bars).
-    For 5m/15m setup: 15m bars, so 20 bars = 5 hours.
-    """
-    if not fvgs:
-        return []
-    
-    # Calculate time window based on HTF (optimized for 15m)
-    tf_minutes = {'5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240}
-    tf_key = htf_timeframe.lower()
-    minutes_per_bar = tf_minutes.get(tf_key, 15)
-    max_age_seconds = max_age_bars * minutes_per_bar * 60
-    
-    recent = []
+    if not fvgs: return []
+
+    tf_min = {"5m":5,"15m":15,"30m":30,"1h":60,"4h":240}.get(htf_timeframe,15)
+    max_s = max_age_bars * tf_min * 60
+
+    recent=[]
     for z in fvgs:
-        age_seconds = (current_ts - z['idx']).total_seconds()
-        if age_seconds <= max_age_seconds:
+        age = (current_ts - z["idx"]).total_seconds()
+        if age <= max_s:
             recent.append(z)
-    
     return recent
 
-def price_in_zone(price, zone_low, zone_high, buffer_pct=RETEST_BUFFER_PCT):
-    if zone_low is None or zone_high is None:
+def price_in_zone(p, lo, hi, buffer_pct=RETEST_BUFFER_PCT):
+    if lo is None or hi is None:
         return False
-    tol = max(zone_high * buffer_pct, 0.0005)
-    return (zone_low - tol) <= price <= (zone_high + tol)
+    tol = max(hi*buffer_pct, 0.0005)
+    return (lo - tol) <= p <= (hi + tol)
 
 def is_bullish_engulfing(prev, curr):
-    return (prev['Close'] < prev['Open']) and (curr['Close'] > curr['Open']) and (curr['Close'] > prev['Open']) and (curr['Open'] < prev['Close'])
+    return (prev["Close"]<prev["Open"]) and (curr["Close"]>curr["Open"]) and (curr["Close"]>prev["Open"]) and (curr["Open"]<prev["Close"])
 
 def is_bearish_engulfing(prev, curr):
-    return (prev['Close'] > prev['Open']) and (curr['Close'] < curr['Open']) and (curr['Open'] > prev['Close']) and (curr['Close'] < prev['Open'])
+    return (prev["Close"]>prev["Open"]) and (curr["Close"]<curr["Open"]) and (curr["Open"]>prev["Close"]) and (curr["Close"]<prev["Open"])
 
-def has_rejection_wick(candle, direction='bull', wick_body_ratio=WICK_BODY_RATIO):
-    """UPDATED: Stricter wick requirement (1.5x body by default)"""
-    body = abs(candle['Close'] - candle['Open'])
-    if body == 0:
-        return False
-    if direction == 'bull':
-        lower_wick = (candle['Open'] - candle['Low']) if candle['Open'] >= candle['Close'] else (candle['Close'] - candle['Low'])
-        return (lower_wick / body) >= wick_body_ratio
+def has_rejection_wick(candle, direction="bull", wick_body_ratio=WICK_BODY_RATIO):
+    body = abs(candle["Close"] - candle["Open"])
+    if body == 0: return False
+    if direction == "bull":
+        lw = (candle["Open"] - candle["Low"]) if candle["Open"]>=candle["Close"] else (candle["Close"]-candle["Low"])
+        return (lw/body) >= wick_body_ratio
     else:
-        upper_wick = (candle['High'] - candle['Open']) if candle['Open'] <= candle['Close'] else (candle['High'] - candle['Close'])
-        return (upper_wick / body) >= wick_body_ratio
+        uw = (candle["High"] - candle["Open"]) if candle["Open"]<=candle["Close"] else (candle["High"]-candle["Close"])
+        return (uw/body) >= wick_body_ratio
 
 # =========================
-# STATE & FILES
+# STATE MANAGEMENT
 # =========================
-def state_files_for_symbol(symbol: str):
+def state_files_for_symbol(symbol):
     tag = "fut_" + symbol.replace("/", "_").replace(":", "_")
     return f"state_{tag}.json", f"{tag}_trades.csv"
 
 def load_state(state_file):
     if os.path.exists(state_file):
-        with open(state_file, "r") as f:
-            s = json.load(f)
-        for k in ["entry_time", "last_processed_ts", "last_exit_time"]:
+        with open(state_file,"r") as f: s=json.load(f)
+        for k in ["entry_time","last_processed_ts","last_exit_time"]:
             if s.get(k):
-                s[k] = pd.to_datetime(s[k], utc=True).tz_convert(None)
+                s[k] = pd.to_datetime(s[k])
         return s
     return {
         "capital": PER_COIN_CAP_USD,
@@ -363,299 +327,263 @@ def load_state(state_file):
     }
 
 def save_state(state_file, state):
-    s = dict(state)
-    for k in ["entry_time", "last_processed_ts", "last_exit_time"]:
+    s=dict(state)
+    for k in ["entry_time","last_processed_ts","last_exit_time"]:
         if s.get(k) is not None:
             s[k] = pd.to_datetime(s[k]).isoformat()
-    with open(state_file, "w") as f:
-        json.dump(s, f, indent=2)
+    with open(state_file,"w") as f:
+        json.dump(s,f,indent=2)
 
 def append_trade(csv_file, row):
     write_header = not os.path.exists(csv_file)
     pd.DataFrame([row]).to_csv(csv_file, mode="a", header=write_header, index=False)
 
 # =========================
-# LIVE ORDER HELPERS
+# ORDER HELPERS
 # =========================
 def place_market(exchange, symbol, side, amount, reduce_only=False):
-    params = {"reduceOnly": True} if reduce_only else {}
-    return exchange.create_order(symbol, type="market", side=side, amount=amount, params=params)
+    params={"reduceOnly":True} if reduce_only else {}
+    return exchange.create_order(symbol,"market",side,amount,params=params)
 
 def avg_fill_price(order):
     p = order.get("average") or order.get("price")
     if p: return float(p)
     if "trades" in order and order["trades"]:
-        notional = 0.0; qty = 0.0
+        n=0; q=0
         for t in order["trades"]:
-            pr = float(t["price"]); am = float(t["amount"])
-            notional += pr*am; qty += am
-        if qty > 0: return notional / qty
+            pr=float(t["price"]); am=float(t["amount"])
+            n+=pr*am; q+=am
+        if q>0: return n/q
     return None
 
 def amount_to_precision(exchange, symbol, amt):
     return float(exchange.amount_to_precision(symbol, amt))
 
 # =========================
-# CORE PER-BAR PROCESSOR
+# MAIN PER-BAR LOGIC
 # =========================
 def process_bar(symbol, etf_df, htf_df, state, exchange=None, funding_series=None):
-    """
-    UPDATED: Now requires confluence scoring (4/5 factors) and uses improved FVG/swing detection.
-    etf_df : entry timeframe dataframe (already trimmed so last row is the latest closed bar)
-    htf_df : higher timeframe dataframe (last row is latest closed bar)
-    """
-    etf = etf_df.copy(); htf = htf_df.copy()
+    etf = etf_df.copy()
+    htf = htf_df.copy()
 
-    # indicators
     if USE_ATR_STOPS:
-        etf['ATR'] = calculate_atr(etf, ATR_PERIOD)
+        etf["ATR"] = calculate_atr(etf, ATR_PERIOD)
     if USE_VOLUME_FILTER:
-        etf['Avg_Volume'] = etf['Volume'].rolling(VOL_LOOKBACK).mean()
-    etf['RSI'] = calculate_rsi(etf['Close'], RSI_PERIOD)
+        etf["Avg_Volume"] = etf["Volume"].rolling(VOL_LOOKBACK).mean()
+    etf["RSI"] = calculate_rsi(etf["Close"], RSI_PERIOD)
 
-    # pick last closed bar
-    i = len(etf) - 1
+    i = len(etf)-1
     if i < 1:
         return state, None
 
     curr = etf.iloc[i]
     prev = etf.iloc[i-1]
-    price = float(curr['Close'])
+    price=float(curr["Close"])
     ts = etf.index[i]
+    ts = ts.replace(tzinfo=None)
 
-    # funding impact when holding
-    if INCLUDE_FUNDING and state["position"] != 0 and funding_series is not None:
-        rate = float(funding_series.iloc[i]) if i < len(funding_series) else 0.0
+    # funding PnL
+    if INCLUDE_FUNDING and state["position"]!=0 and funding_series is not None:
+        rate = float(funding_series.iloc[i]) if i<len(funding_series) else 0.0
         if rate != 0.0 and state["entry_price"] and state["entry_size"]:
-            notional = abs(state["entry_price"] * state["entry_size"])
-            fee = notional * rate * (1 if state["position"] == 1 else -1) * (-1)
+            notional = abs(state["entry_price"]*state["entry_size"])
+            fee = notional * rate * (1 if state["position"]==1 else -1) * (-1)
             state["capital"] += fee
 
-    # update peak equity
+    # peak equity
     state["peak_equity"] = max(state["peak_equity"], state["capital"])
-    if state["peak_equity"] > 0:
-        dd = (state["peak_equity"] - state["capital"]) / state["peak_equity"]
-    else:
-        dd = 0.0
-    # forced exit on global drawdown
-    if dd >= MAX_DRAWDOWN and state["position"] != 0:
-        side = "sell" if state["position"] == 1 else "buy"
+    dd = (state["peak_equity"]-state["capital"])/state["peak_equity"] if state["peak_equity"]>0 else 0
+
+    # forced exit
+    if dd >= MAX_DRAWDOWN and state["position"]!=0:
+        side = "sell" if state["position"]==1 else "buy"
         exit_price = price
-        if MODE == "live":
+        if MODE=="live":
             try:
-                order = place_market(exchange, symbol, side, amount_to_precision(exchange, symbol, state["entry_size"]), reduce_only=True)
-                exit_price = float(avg_fill_price(order) or price)
+                order = place_market(exchange,symbol,side,amount_to_precision(exchange,symbol,state["entry_size"]),True)
+                exit_price=float(avg_fill_price(order) or price)
             except Exception as e:
                 send_telegram_fut(f"❌ {symbol} forced-exit failed: {e}")
-        gross = state["entry_size"] * (exit_price - state["entry_price"]) * (1 if state["position"]==1 else -1)
+
+        gross = state["entry_size"]*(exit_price-state["entry_price"])*(1 if state["position"]==1 else -1)
         pos_val = abs(exit_price * state["entry_size"])
         pnl = gross - pos_val*SLIPPAGE_RATE - pos_val*FEE_RATE
         state["capital"] += pnl
-        row = {
-            "Symbol": symbol, "Entry_DateTime": state["entry_time"],
-            "Exit_DateTime": ts, "Position": "Long" if state["position"]==1 else "Short",
-            "Entry_Price": round(state["entry_price"],6), "Exit_Price": round(exit_price,6),
-            "Take_Profit": round(state["entry_tp"],6), "Stop_Loss": round(state["entry_sl"],6),
-            "Position_Size_Base": round(state["entry_size"],8),
-            "PnL_$": round(pnl,2), "Win": 1 if pnl>0 else 0,
-            "Exit_Reason": "MAX_DRAWDOWN", "Capital_After": round(state["capital"],2), "Mode": MODE
+
+        row={
+            "Symbol":symbol,"Entry_DateTime":state["entry_time"],
+            "Exit_DateTime":ts,"Position":"Long" if state["position"]==1 else "Short",
+            "Entry_Price":round(state["entry_price"],6),"Exit_Price":round(exit_price,6),
+            "Take_Profit":round(state["entry_tp"],6),"Stop_Loss":round(state["entry_sl"],6),
+            "Position_Size_Base":round(state["entry_size"],8),
+            "PnL_$":round(pnl,2),"Win":1 if pnl>0 else 0,
+            "Exit_Reason":"MAX_DRAWDOWN","Capital_After":round(state["capital"],2),"Mode":MODE
         }
+
         state.update({"position":0,"entry_price":0.0,"entry_sl":0.0,"entry_tp":0.0,"entry_time":None,"entry_size":0.0})
-        return state, row
+        return state,row
 
-    trade_row = None
+    trade_row=None
 
-    # ===== EXIT logic: only SL or TP =====
+    # EXIT LOGIC
     if state["position"] != 0:
-        exit_flag = False; exit_reason = ""; exit_price = price
-        if state["position"] == 1:
-            if price >= state["entry_tp"]:
-                exit_flag, exit_price, exit_reason = True, state["entry_tp"], "Take Profit"
-            elif price <= state["entry_sl"]:
-                exit_flag, exit_price, exit_reason = True, state["entry_sl"], "Stop Loss"
+        exit_flag=False; exit_reason=""; exit_price=price
+
+        if state["position"]==1:
+            if price>=state["entry_tp"]:
+                exit_flag=True; exit_price=state["entry_tp"]; exit_reason="Take Profit"
+            elif price<=state["entry_sl"]:
+                exit_flag=True; exit_price=state["entry_sl"]; exit_reason="Stop Loss"
         else:
-            if price <= state["entry_tp"]:
-                exit_flag, exit_price, exit_reason = True, state["entry_tp"], "Take Profit"
-            elif price >= state["entry_sl"]:
-                exit_flag, exit_price, exit_reason = True, state["entry_sl"], "Stop Loss"
+            if price<=state["entry_tp"]:
+                exit_flag=True; exit_price=state["entry_tp"]; exit_reason="Take Profit"
+            elif price>=state["entry_sl"]:
+                exit_flag=True; exit_price=state["entry_sl"]; exit_reason="Stop Loss"
 
         if exit_flag:
-            side = "sell" if state["position"]==1 else "buy"
-            if MODE == "live":
+            side="sell" if state["position"]==1 else "buy"
+            if MODE=="live":
                 try:
-                    order = place_market(exchange, symbol, side, amount_to_precision(exchange, symbol, state["entry_size"]), reduce_only=True)
-                    exit_price = float(avg_fill_price(order) or price)
+                    order = place_market(exchange,symbol,side,amount_to_precision(exchange,symbol,state["entry_size"]),True)
+                    exit_price=float(avg_fill_price(order) or price)
                 except Exception as e:
                     send_telegram_fut(f"❌ {symbol} exit failed: {e}")
-            gross = state["entry_size"] * (exit_price - state["entry_price"]) * (1 if state["position"]==1 else -1)
-            pos_val = abs(exit_price * state["entry_size"])
-            pnl = gross - pos_val*SLIPPAGE_RATE - pos_val*FEE_RATE
-            state["capital"] += pnl
 
-            trade_row = {
-                "Symbol": symbol, "Entry_DateTime": state["entry_time"],
-                "Exit_DateTime": ts, "Position": "Long" if state["position"]==1 else "Short",
-                "Entry_Price": round(state["entry_price"],6), "Exit_Price": round(exit_price,6),
-                "Take_Profit": round(state["entry_tp"],6), "Stop_Loss": round(state["entry_sl"],6),
-                "Position_Size_Base": round(state["entry_size"],8),
-                "PnL_$": round(pnl,2), "Win": 1 if pnl>0 else 0,
-                "Exit_Reason": exit_reason, "Capital_After": round(state["capital"],2), "Mode": MODE
+            gross = state["entry_size"]*(exit_price-state["entry_price"])*(1 if state["position"]==1 else -1)
+            pos_val=abs(exit_price*state["entry_size"])
+            pnl = gross - pos_val*SLIPPAGE_RATE - pos_val*FEE_RATE
+            state["capital"]+=pnl
+
+            trade_row={
+                "Symbol":symbol,"Entry_DateTime":state["entry_time"],
+                "Exit_DateTime":ts,"Position":"Long" if state["position"]==1 else "Short",
+                "Entry_Price":round(state["entry_price"],6),"Exit_Price":round(exit_price,6),
+                "Take_Profit":round(state["entry_tp"],6),"Stop_Loss":round(state["entry_sl"],6),
+                "Position_Size_Base":round(state["entry_size"],8),
+                "PnL_$":round(pnl,2),"Win":1 if pnl>0 else 0,
+                "Exit_Reason":exit_reason,"Capital_After":round(state["capital"],2),
+                "Mode":MODE
             }
+
             state.update({"position":0,"entry_price":0.0,"entry_sl":0.0,"entry_tp":0.0,"entry_time":None,"entry_size":0.0})
             send_telegram_fut(f"{'💚' if pnl>0 else '🔴'} EXIT {symbol} {exit_reason} @ {exit_price:.4f} | PnL ${pnl:.2f}")
 
-    # ===== UPDATED ENTRY logic: HTF structure/FVG + confluence scoring =====
+    # ENTRY LOGIC
     if state["position"] == 0:
-        # cooldown
-        if COOLDOWN_HOURS > 0 and state.get("last_exit_time") is not None:
-            if (ts - state["last_exit_time"]).total_seconds() / 3600 < COOLDOWN_HOURS:
-                state["last_processed_ts"] = ts
+
+        # cooldown FIXED (tz-safe)
+        if COOLDOWN_HOURS>0 and state.get("last_exit_time") is not None:
+            last_exit_ts = pd.to_datetime(state["last_exit_time"]).replace(tzinfo=None)
+            if (ts - last_exit_ts).total_seconds()/3600 < COOLDOWN_HOURS:
+                state["last_processed_ts"]=ts
                 return state, trade_row
 
-        # need minimum bars
-        if len(etf) < 3 or len(htf) < 3:
-            state["last_processed_ts"] = ts
-            return state, trade_row
+        if len(etf)<3 or len(htf)<3:
+            state["last_processed_ts"]=ts
+            return state,trade_row
 
-        # UPDATED: Get HTF structure with proper swing detection
-        struct = get_htf_structure_level(htf, lookback=30, swing_strength=SWING_STRENGTH)
-        
-        # UPDATED: Get FVGs with minimum gap filter
-        fvgs = find_fvgs(htf, min_gap_pct=MIN_FVG_GAP_PCT)
-        
-        # NEW: Filter for recent FVGs only (last 20 HTF bars = 5 hours for 15m)
-        fvgs = filter_recent_fvgs(fvgs, ts, HTF, max_age_bars=FVG_MAX_AGE_BARS)
+        struct = get_htf_structure_level(htf)
+        fvgs = find_fvgs(htf)
+        fvgs = filter_recent_fvgs(fvgs, ts, HTF)
 
-        # UPDATED: Stricter volume check (1.2x average)
         vol_ok_long = vol_ok_short = True
-        if USE_VOLUME_FILTER and not pd.isna(etf['Volume'].iloc[i]):
-            avgv = etf['Volume'].rolling(VOL_LOOKBACK).mean().iloc[i]
+        if USE_VOLUME_FILTER and not pd.isna(etf["Volume"].iloc[i]):
+            avgv=etf["Avg_Volume"].iloc[i]
             if not pd.isna(avgv):
-                vol_ok_long = etf['Volume'].iloc[i] >= VOL_MIN_RATIO * avgv
+                vol_ok_long = etf["Volume"].iloc[i] >= VOL_MIN_RATIO*avgv
                 vol_ok_short = vol_ok_long
 
-        # UPDATED: Stricter RSI thresholds (45/55 instead of 50/50)
-        rsi = float(etf['RSI'].iloc[i]) if not pd.isna(etf['RSI'].iloc[i]) else None
-        rsi_ok_long = True if rsi is None else rsi > RSI_THRESHOLD_LONG
-        rsi_ok_short = True if rsi is None else rsi < RSI_THRESHOLD_SHORT
+        rsi = float(etf["RSI"].iloc[i]) if not pd.isna(etf["RSI"].iloc[i]) else None
+        rsi_ok_long = True if rsi is None else (rsi > RSI_THRESHOLD_LONG)
+        rsi_ok_short = True if rsi is None else (rsi < RSI_THRESHOLD_SHORT)
 
-        # Price-action confirmation on the last closed candle
-        prevc = etf.iloc[i-1]
-        currc = etf.iloc[i]
+        prevc = etf.iloc[i-1]; currc = etf.iloc[i]
+        pa_confirm_long = is_bullish_engulfing(prevc,currc) or has_rejection_wick(currc,"bull")
+        pa_confirm_short= is_bearish_engulfing(prevc,currc) or has_rejection_wick(currc,"bear")
 
-        pa_confirm_long = (is_bullish_engulfing(prevc, currc) or has_rejection_wick(currc, direction='bull', wick_body_ratio=WICK_BODY_RATIO))
-        pa_confirm_short = (is_bearish_engulfing(prevc, currc) or has_rejection_wick(currc, direction='bear', wick_body_ratio=WICK_BODY_RATIO))
-
-        # NEW: Confluence scoring - check retest into FVG or swing level
-        retest_long = False
-        retest_short = False
-
-        # Check FVG retest (prefer most recent relevant FVG)
+        retest_long=False; retest_short=False
         for z in reversed(fvgs):
-            if z['type'] == 'bull' and price_in_zone(price, z['low'], z['high']):
-                retest_long = True
-                break
-            if z['type'] == 'bear' and price_in_zone(price, z['low'], z['high']):
-                retest_short = True
-                break
+            if z["type"]=="bull" and price_in_zone(price,z["low"],z["high"]):
+                retest_long=True; break
+            if z["type"]=="bear" and price_in_zone(price,z["low"],z["high"]):
+                retest_short=True; break
 
-        # Fallback: retest into last HTF swing low/high (SMC retest)
-        if not retest_long and struct.get('last_sl') is not None:
-            retest_long = price_in_zone(price, struct['last_sl'], struct['last_sl'])
-        
-        if not retest_short and struct.get('last_sh') is not None:
-            retest_short = price_in_zone(price, struct['last_sh'], struct['last_sh'])
+        if not retest_long and struct["last_sl"] is not None:
+            retest_long=price_in_zone(price,struct["last_sl"],struct["last_sl"])
+        if not retest_short and struct["last_sh"] is not None:
+            retest_short=price_in_zone(price,struct["last_sh"],struct["last_sh"])
 
-        # Optional HTF gating: require HTF trend to match entry direction
-        htf_trend = struct.get('trend', 0)
-        htf_gate_long = (not USE_HTF_GATE) or (htf_trend == 1)
-        htf_gate_short = (not USE_HTF_GATE) or (htf_trend == -1)
+        htf_trend = struct["trend"]
+        htf_gate_long = (not USE_HTF_GATE) or (htf_trend==1)
+        htf_gate_short = (not USE_HTF_GATE) or (htf_trend==-1)
 
-        # NEW: Count confluence factors (require MIN_CONFLUENCE out of 5)
-        confluence_long = 0
-        confluence_short = 0
-        
-        if retest_long: confluence_long += 1
-        if pa_confirm_long: confluence_long += 1
-        if vol_ok_long: confluence_long += 1
-        if rsi_ok_long: confluence_long += 1
-        if htf_gate_long: confluence_long += 1
-        
-        if retest_short: confluence_short += 1
-        if pa_confirm_short: confluence_short += 1
-        if vol_ok_short: confluence_short += 1
-        if rsi_ok_short: confluence_short += 1
-        if htf_gate_short: confluence_short += 1
+        cl=0; cs=0
+        if retest_long: cl+=1
+        if pa_confirm_long: cl+=1
+        if vol_ok_long: cl+=1
+        if rsi_ok_long: cl+=1
+        if htf_gate_long: cl+=1
 
-        # UPDATED: Require minimum confluence (default 4/5 factors)
-        long_ok = confluence_long >= MIN_CONFLUENCE
-        short_ok = confluence_short >= MIN_CONFLUENCE
+        if retest_short: cs+=1
+        if pa_confirm_short: cs+=1
+        if vol_ok_short: cs+=1
+        if rsi_ok_short: cs+=1
+        if htf_gate_short: cs+=1
+
+        long_ok = cl >= MIN_CONFLUENCE
+        short_ok = cs >= MIN_CONFLUENCE
 
         signal = 1 if long_ok else (-1 if short_ok else 0)
 
-        if signal != 0 and (not USE_ATR_STOPS or (USE_ATR_STOPS and not pd.isna(etf['ATR'].iloc[i]) and etf['ATR'].iloc[i] > 0)):
-            if signal == 1:
-                sl = price - (ATR_MULT_SL * etf['ATR'].iloc[i]) if USE_ATR_STOPS else price * (1 - min(max(price*0.0005,0.0005),0.0015))
-                risk = abs(price - sl)
-                rr = RR_FIXED
-                if DYNAMIC_RR and USE_ATR_STOPS and i >= 6:
-                    recent = float(etf['ATR'].iloc[i-5:i].mean())
-                    curr_atr = float(etf['ATR'].iloc[i])
-                    if recent > 0:
-                        if curr_atr > recent*1.2: rr = MIN_RR
-                        elif curr_atr < recent*0.8: rr = MAX_RR
-                tp = price + rr * risk
+        if signal != 0 and (not USE_ATR_STOPS or (USE_ATR_STOPS and etf["ATR"].iloc[i] > 0)):
+            if signal==1:
+                sl = price - ATR_MULT_SL*etf["ATR"].iloc[i]
+                risk=abs(price-sl)
+                rr=RR_FIXED
+                tp = price + rr*risk
             else:
-                sl = price + (ATR_MULT_SL * etf['ATR'].iloc[i]) if USE_ATR_STOPS else price * (1 + min(max(price*0.0005,0.0005),0.0015))
-                risk = abs(sl - price)
-                rr = RR_FIXED
-                if DYNAMIC_RR and USE_ATR_STOPS and i >= 6:
-                    recent = float(etf['ATR'].iloc[i-5:i].mean())
-                    curr_atr = float(etf['ATR'].iloc[i])
-                    if recent > 0:
-                        if curr_atr > recent*1.2: rr = MIN_RR
-                        elif curr_atr < recent*0.8: rr = MAX_RR
-                tp = price - rr * risk
+                sl = price + ATR_MULT_SL*etf["ATR"].iloc[i]
+                risk=abs(sl-price)
+                rr=RR_FIXED
+                tp = price - rr*risk
 
-            if risk > 0:
-                size = position_size_futures(price, sl, state["capital"], RISK_PERCENT, MAX_TRADE_SIZE)
-                if size > 0:
-                    entry_price_used = price
-                    side = "buy" if signal==1 else "sell"
-                    if MODE == "live":
+            if risk>0:
+                size = position_size_futures(price,sl,state["capital"],RISK_PERCENT,MAX_TRADE_SIZE)
+                if size>0:
+                    entry_price_used=price
+                    side="buy" if signal==1 else "sell"
+                    if MODE=="live":
                         try:
-                            size = amount_to_precision(exchange, symbol, size)
-                            order = place_market(exchange, symbol, side, size, reduce_only=False)
-                            ep = avg_fill_price(order)
-                            if ep is not None: entry_price_used = float(ep)
+                            size=amount_to_precision(exchange,symbol,size)
+                            order=place_market(exchange,symbol,side,size,False)
+                            ep=avg_fill_price(order)
+                            if ep: entry_price_used=float(ep)
                         except Exception as e:
                             send_telegram_fut(f"❌ {symbol} entry failed: {e}")
-                            state["last_processed_ts"] = ts
-                            return state, trade_row
+                            state["last_processed_ts"]=ts
+                            return state,trade_row
 
-                    state["position"] = 1 if signal==1 else -1
-                    state["entry_price"] = entry_price_used
-                    state["entry_sl"] = sl
-                    state["entry_tp"] = tp
-                    state["entry_time"] = ts
-                    state["entry_size"] = size
+                    state["position"]=1 if signal==1 else -1
+                    state["entry_price"]=entry_price_used
+                    state["entry_sl"]=sl
+                    state["entry_tp"]=tp
+                    state["entry_time"]=ts
+                    state["entry_size"]=size
 
-                    pos_val = abs(entry_price_used * size)
-                    state["capital"] -= pos_val*SLIPPAGE_RATE
-                    state["capital"] -= pos_val*FEE_RATE
+                    pos_val=abs(entry_price_used*size)
+                    state["capital"]-=pos_val*SLIPPAGE_RATE
+                    state["capital"]-=pos_val*FEE_RATE
 
-                    tag = "LONG" if signal==1 else "SHORT"
-                    # NEW: Include confluence score in telegram notification
-                    conf_score = confluence_long if signal==1 else confluence_short
-                    send_telegram_fut(f"🚀 ENTRY {symbol} {tag} @ {entry_price_used:.4f} | SL {sl:.4f} | TP {tp:.4f} | RR {rr:.1f} | Confluence {conf_score}/5")
+                    tag="LONG" if signal==1 else "SHORT"
+                    score=cl if signal==1 else cs
+                    send_telegram_fut(f"🚀 ENTRY {symbol} {tag} @ {entry_price_used:.4f} | SL {sl:.4f} | TP {tp:.4f} | RR {rr:.1f} | Confluence {score}/5")
 
-    # update processed ts
-    state["last_processed_ts"] = ts
-    state["peak_equity"] = max(state["peak_equity"], state["capital"])
-    return state, trade_row
+    state["last_processed_ts"]=ts
+    state["peak_equity"]=max(state["peak_equity"],state["capital"])
+    return state,trade_row
 
 # =========================
-# WORKER (one per symbol)
+# WORKER THREAD
 # =========================
 def worker(symbol):
     state_file, trades_csv = state_files_for_symbol(symbol)
@@ -666,52 +594,47 @@ def worker(symbol):
 
     while True:
         try:
-            now = datetime.now(timezone.utc)
-            since = now - timedelta(days=LOOKBACK_DAYS)
-            since_ms = int(since.timestamp()*1000); until_ms = int(now.timestamp()*1000)
+            now=datetime.now(timezone.utc)
+            since=now - timedelta(days=LOOKBACK_DAYS)
+            since_ms=int(since.timestamp()*1000); until_ms=int(now.timestamp()*1000)
 
-            etf = fetch_ohlcv_range(exchange, symbol, ENTRY_TF, since_ms, until_ms)
-            htf = fetch_ohlcv_range(exchange, symbol, HTF, since_ms, until_ms)
-            if etf.empty or htf.empty or len(etf) < 3:
+            etf=fetch_ohlcv_range(exchange,symbol,ENTRY_TF,since_ms,until_ms)
+            htf=fetch_ohlcv_range(exchange,symbol,HTF,since_ms,until_ms)
+            if etf.empty or htf.empty or len(etf)<3:
                 time.sleep(30); continue
 
-            # act on last CLOSED bar (we use -2 index as last closed; we'll pass data trimmed to exclude realtime)
             closed_ts = etf.index[-2]
             closed_ts = closed_ts.replace(tzinfo=None)
+
             if state["last_processed_ts"] is not None:
                 last_ts = pd.to_datetime(state["last_processed_ts"]).replace(tzinfo=None)
-                closed_ts = closed_ts.replace(tzinfo=None)
                 if last_ts >= closed_ts:
-                    time.sleep(10)
-                    continue
+                    time.sleep(10); continue
 
-
-            # prepare trimmed dfs so last row is last closed bar
-            etf_trim = etf.iloc[:-1]  # exclude current forming bar
+            etf_trim = etf.iloc[:-1]
             htf_trim = htf.iloc[:-1]
 
-            funding_series = None
+            funding_series=None
             if INCLUDE_FUNDING:
-                fdf = fetch_funding_history(exchange, symbol, int(etf_trim.index[0].timestamp()*1000), int(etf_trim.index[-1].timestamp()*1000))
+                fdf = fetch_funding_history(exchange,symbol,int(etf_trim.index[0].timestamp()*1000), int(etf_trim.index[-1].timestamp()*1000))
                 funding_series = align_funding_to_index(etf_trim.index, fdf)
 
-            state, trade = process_bar(symbol, etf_trim, htf_trim, state, exchange=exchange, funding_series=funding_series)
-            if trade is not None:
-                append_trade(trades_csv, trade)
+            state,trade = process_bar(symbol,etf_trim,htf_trim,state,exchange,funding_series)
+            if trade:
+                append_trade(trades_csv,trade)
 
-            save_state(state_file, state)
+            save_state(state_file,state)
 
-            # sleep to just after next bar close (ENTRY_TF cadence)
             next_close = etf.index[-1] + (etf.index[-1] - etf.index[-2])
             sleep_sec = (next_close - datetime.now(timezone.utc)).total_seconds() + 5
-            if sleep_sec < 5: sleep_sec = 5
-            if sleep_sec > 3600: sleep_sec = SLEEP_CAP
+            if sleep_sec < 5: sleep_sec=5
+            if sleep_sec > 3600: sleep_sec=SLEEP_CAP
             time.sleep(sleep_sec)
 
         except ccxt.RateLimitExceeded:
             time.sleep(10)
         except Exception as e:
-            msg = f"{LOG_PREFIX} {symbol} ERROR: {e}"
+            msg=f"{LOG_PREFIX} {symbol} ERROR: {e}"
             print(msg)
             traceback.print_exc()
             send_telegram_fut(msg)
@@ -721,65 +644,75 @@ def worker(symbol):
 # DAILY SUMMARY (IST)
 # =========================
 def ist_now():
-    return datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    return datetime.now(timezone(timedelta(hours=5,minutes=30)))
 
 def generate_daily_summary():
     try:
-        now_ist = ist_now()
-        start_ist = datetime(now_ist.year, now_ist.month, now_ist.day, 0,0,0, tzinfo=now_ist.tzinfo)
-        end_ist = datetime(now_ist.year, now_ist.month, now_ist.day, 23,59,59, tzinfo=now_ist.tzinfo)
+        now_ist=ist_now()
+        start_ist=datetime(now_ist.year,now_ist.month,now_ist.day,0,0,0,tzinfo=now_ist.tzinfo)
+        end_ist=datetime(now_ist.year,now_ist.month,now_ist.day,23,59,59,tzinfo=now_ist.tzinfo)
+
         start_utc = start_ist.astimezone(timezone.utc).replace(tzinfo=None)
         end_utc = end_ist.astimezone(timezone.utc).replace(tzinfo=None)
 
-        lines = [f"📊 FUTURES DAILY SUMMARY — {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}", "-"*60]
-        total_cap = total_init = pnl_today = n_today = w_today = 0.0
+        lines=[f"📊 FUTURES DAILY SUMMARY — {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}", "-"*60]
+
+        total_cap=total_init=pnl_today=n_today=w_today=0.0
 
         for sym in SYMBOLS:
-            state_file, trades_csv = state_files_for_symbol(sym)
-            state = load_state(state_file) if os.path.exists(state_file) else {"capital": PER_COIN_CAP_USD, "position":0}
-            cap = float(state.get("capital", PER_COIN_CAP_USD))
-            initial = PER_COIN_CAP_USD
+            state_file,trades_csv = state_files_for_symbol(sym)
+            state = load_state(state_file) if os.path.exists(state_file) else {"capital":PER_COIN_CAP_USD,"position":0}
+            cap=float(state.get("capital",PER_COIN_CAP_USD))
+            initial=PER_COIN_CAP_USD
 
-            wins = losses = wr = 0.0
-            pnl_all = 0.0
-            n_trades_today = wins_today = 0
-            pnl_today_sym = 0.0
+            wins=losses=wr=0.0
+            pnl_all=0.0
+            n_trades_today=wins_today=0
+            pnl_today_sym=0.0
 
             if os.path.exists(trades_csv):
-                df = pd.read_csv(trades_csv)
+                df=pd.read_csv(trades_csv)
                 if len(df):
-                    df['Exit_DateTime'] = pd.to_datetime(df['Exit_DateTime']).dt.tz_localize(None)
-                    today = df[(df['Exit_DateTime'] >= start_utc) & (df['Exit_DateTime'] <= end_utc)]
+                    df["Exit_DateTime"] = pd.to_datetime(df["Exit_DateTime"]).dt.tz_localize(None)
+
+                    today = df[(df["Exit_DateTime"]>=start_utc) & (df["Exit_DateTime"]<=end_utc)]
+
                     n_trades_today = len(today)
-                    wins_today = int(today['Win'].sum()) if n_trades_today else 0
+                    wins_today = int(today["Win"].sum()) if n_trades_today else 0
                     pnl_today_sym = float(today["PnL_$"].sum()) if n_trades_today else 0.0
                     pnl_all = float(df["PnL_$"].sum())
-                    wins = int(df['Win'].sum()); losses = len(df)-wins
+                    wins = int(df["Win"].sum()); losses=len(df)-wins
                     wr = (wins/len(df)*100) if len(df) else 0.0
 
-            total_cap += cap; total_init += initial
-            pnl_today += pnl_today_sym; n_today += n_trades_today; w_today += wins_today
-            roi = ((cap/initial)-1)*100 if initial>0 else 0.0
+            total_cap += cap
+            total_init += initial
+            pnl_today += pnl_today_sym
+            n_today += n_trades_today
+            w_today += wins_today
+            roi=((cap/initial)-1)*100 if initial>0 else 0
 
             lines.append(f"{sym}: cap ${cap:,.2f} ({roi:+.2f}%) | today {n_trades_today} trades, {wins_today} wins | PnL ${pnl_today_sym:+.2f} | all WR {wr:.1f}%")
 
-        port_roi = ((total_cap/total_init)-1)*100 if total_init>0 else 0.0
-        wr_today = (w_today/n_today*100) if n_today>0 else 0.0
+        port_roi=((total_cap/total_init)-1)*100 if total_init>0 else 0
+        wr_today=(w_today/n_today*100) if n_today>0 else 0
+
         lines += ["-"*60, f"TOTAL: cap ${total_cap:,.2f} ({port_roi:+.2f}%) | today {n_today} trades | WR {wr_today:.1f}% | PnL ${pnl_today:+.2f}"]
-        msg = "\n".join(lines)
+
+        msg="\n".join(lines)
         print(msg)
         send_telegram_fut(msg)
+
     except Exception as e:
         send_telegram_fut(f"❌ summary error: {e}")
 
 def summary_scheduler():
-    last_sent_date = None
+    last_sent=None
     while True:
         try:
-            now = ist_now()
-            if now.hour == SUMMARY_HOUR_IST and (last_sent_date is None or last_sent_date != now.date()):
+            now=ist_now()
+            if now.hour == SUMMARY_HOUR_IST and (last_sent is None or last_sent != now.date()):
                 generate_daily_summary()
-                last_sent_date = now.date()
+                last_sent = now.date()
             time.sleep(60)
         except Exception:
             time.sleep(60)
@@ -788,47 +721,34 @@ def summary_scheduler():
 # MAIN
 # =========================
 def main():
-    boot = f"""
-🚀 Futures Bot Started (UPDATED - Reduced False Signals)
+    boot=f"""
+🚀 Futures Bot Started (UPDATED - CLEAN & PATCHED)
 Mode: {MODE.upper()}
-Exchange: KuCoin Futures (perps)
+Exchange: KuCoin Futures
 Symbols: {", ".join(SYMBOLS)}
 TF: {ENTRY_TF}/{HTF}
 Cap/coin: ${PER_COIN_CAP_USD:,.2f}
-Risk: {RISK_PERCENT*100:.1f}% | Fee: {FEE_RATE*100:.3f}% | Slippage: {SLIPPAGE_RATE*100:.3f}%
 
-UPDATED FILTERS:
-✓ Minimum FVG gap: {MIN_FVG_GAP_PCT*100:.2f}%
-✓ FVG max age: {FVG_MAX_AGE_BARS} HTF bars
-✓ Wick/body ratio: {WICK_BODY_RATIO}x
-✓ Volume threshold: {VOL_MIN_RATIO}x average
-✓ RSI thresholds: Long>{RSI_THRESHOLD_LONG}, Short<{RSI_THRESHOLD_SHORT}
-✓ Retest buffer: {RETEST_BUFFER_PCT*100:.2f}%
-✓ Min confluence: {MIN_CONFLUENCE}/5 factors
-✓ Swing strength: {SWING_STRENGTH} bars
-
-Strategy: FVG + SMC + PA entry with proper swing detection
-Exits: SL/TP only
+Strategy: SMC + FVG + PA with reduced false signals
 """
     print(boot)
     send_telegram_fut(boot)
 
-    threads = []
+    threads=[]
     for sym in SYMBOLS:
-        t = threading.Thread(target=worker, args=(sym,), daemon=True)
+        t=threading.Thread(target=worker,args=(sym,),daemon=True)
         t.start(); threads.append(t)
         time.sleep(1)
 
     if SEND_DAILY_SUMMARY:
-        s = threading.Thread(target=summary_scheduler, daemon=True)
+        s = threading.Thread(target=summary_scheduler,daemon=True)
         s.start(); threads.append(s)
 
     print(f"✅ Running {len(threads)} threads…")
     while True:
         time.sleep(3600)
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
-
 
 
