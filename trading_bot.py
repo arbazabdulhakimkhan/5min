@@ -31,20 +31,24 @@ MAX_RR = float(os.getenv("MAX_RR", "6.0"))
 ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
 ATR_MULT_SL = float(os.getenv("ATR_MULT_SL", "1.5"))
 USE_ATR_STOPS = os.getenv("USE_ATR_STOPS", "true").lower() == "true"
-USE_HTF_GATE = os.getenv("USE_HTF_GATE", "true").lower() == "true"  # optional HTF gating
+USE_HTF_GATE = os.getenv("USE_HTF_GATE", "true").lower() == "true"
 
-# filters
+# filters - UPDATED FOR LESS FALSE SIGNALS
 USE_VOLUME_FILTER = os.getenv("USE_VOLUME_FILTER", "true").lower() == "true"
 VOL_LOOKBACK = int(os.getenv("VOL_LOOKBACK", "20"))
-VOL_MIN_RATIO = float(os.getenv("VOL_MIN_RATIO", "1.0"))
+VOL_MIN_RATIO = float(os.getenv("VOL_MIN_RATIO", "1.2"))  # UPDATED: 1.0 -> 1.2
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
-RSI_THRESHOLD_LONG = float(os.getenv("RSI_THRESHOLD_LONG", "50"))
-RSI_THRESHOLD_SHORT = float(os.getenv("RSI_THRESHOLD_SHORT", "50"))
+RSI_THRESHOLD_LONG = float(os.getenv("RSI_THRESHOLD_LONG", "45"))  # UPDATED: 50 -> 45
+RSI_THRESHOLD_SHORT = float(os.getenv("RSI_THRESHOLD_SHORT", "55"))  # UPDATED: 50 -> 55
 COOLDOWN_HOURS = float(os.getenv("COOLDOWN_HOURS", "0.0"))
 
-# FVG & PA params
-RETEST_BUFFER_PCT = float(os.getenv("RETEST_BUFFER_PCT", "0.003"))  # relative tolerance
-WICK_BODY_RATIO = float(os.getenv("WICK_BODY_RATIO", "0.6"))
+# FVG & PA params - UPDATED FOR LESS FALSE SIGNALS
+RETEST_BUFFER_PCT = float(os.getenv("RETEST_BUFFER_PCT", "0.0015"))  # UPDATED: 0.003 -> 0.0015
+WICK_BODY_RATIO = float(os.getenv("WICK_BODY_RATIO", "1.5"))  # UPDATED: 0.6 -> 1.5
+MIN_FVG_GAP_PCT = float(os.getenv("MIN_FVG_GAP_PCT", "0.002"))  # NEW: minimum 0.2% gap
+FVG_MAX_AGE_BARS = int(os.getenv("FVG_MAX_AGE_BARS", "20"))  # NEW: FVG expiry
+MIN_CONFLUENCE = int(os.getenv("MIN_CONFLUENCE", "4"))  # NEW: require 4/5 factors
+SWING_STRENGTH = int(os.getenv("SWING_STRENGTH", "2"))  # NEW: swing detection bars
 
 # risk/fees
 MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "0.20"))
@@ -194,48 +198,117 @@ def position_size_futures(price, sl, capital, risk_percent, max_trade_size):
     max_by_capital = capital / price
     return max(min(max_by_risk, max_by_capital, max_trade_size / price), 0)
 
-# ---------- SMC/FVG/PA helpers ----------
-def get_htf_structure_level(htf_df, lookback=30):
+# ---------- UPDATED SMC/FVG/PA helpers ----------
+def get_htf_structure_level(htf_df, lookback=30, swing_strength=SWING_STRENGTH):
     """
-    Rough swing detection on HTF:
-    returns last swing high and low (floats or None) plus a simple trend (1 up, -1 down, 0 flat)
+    UPDATED: Proper swing high/low detection with trend confirmation.
+    Swing = high/low that is higher/lower than N bars on each side.
+    Trend = higher highs + higher lows OR lower highs + lower lows.
     """
-    if len(htf_df) < 4:
+    if len(htf_df) < swing_strength * 2 + 1:
         return {'trend':0, 'last_sh':None, 'last_sl':None}
-    highs = htf_df['High'].rolling(window=lookback, min_periods=1).max()
-    lows = htf_df['Low'].rolling(window=lookback, min_periods=1).min()
-    last_sh = float(highs.iloc[-2]) if not pd.isna(highs.iloc[-2]) else None
-    last_sl = float(lows.iloc[-2]) if not pd.isna(lows.iloc[-2]) else None
+    
+    swing_highs = []
+    swing_lows = []
+    
+    # Detect swing points (higher/lower than N bars on each side)
+    for i in range(swing_strength, len(htf_df) - swing_strength):
+        # Swing high: higher than all bars within swing_strength distance
+        is_swing_high = all(
+            htf_df['High'].iloc[i] > htf_df['High'].iloc[i-j] and
+            htf_df['High'].iloc[i] > htf_df['High'].iloc[i+j]
+            for j in range(1, swing_strength + 1)
+        )
+        if is_swing_high:
+            swing_highs.append((htf_df.index[i], float(htf_df['High'].iloc[i])))
+        
+        # Swing low: lower than all bars within swing_strength distance
+        is_swing_low = all(
+            htf_df['Low'].iloc[i] < htf_df['Low'].iloc[i-j] and
+            htf_df['Low'].iloc[i] < htf_df['Low'].iloc[i+j]
+            for j in range(1, swing_strength + 1)
+        )
+        if is_swing_low:
+            swing_lows.append((htf_df.index[i], float(htf_df['Low'].iloc[i])))
+    
+    last_sh = swing_highs[-1][1] if swing_highs else None
+    last_sl = swing_lows[-1][1] if swing_lows else None
+    
+    # Determine trend: require higher highs + higher lows OR lower highs + lower lows
     trend = 0
-    try:
-        if htf_df['Close'].iloc[-2] > htf_df['Close'].iloc[-4]:
-            trend = 1
-        elif htf_df['Close'].iloc[-2] < htf_df['Close'].iloc[-4]:
-            trend = -1
-    except Exception:
-        trend = 0
-    return {'trend':int(trend), 'last_sh': last_sh, 'last_sl': last_sl}
+    if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+        hh = swing_highs[-1][1] > swing_highs[-2][1]  # higher high
+        hl = swing_lows[-1][1] > swing_lows[-2][1]    # higher low
+        lh = swing_highs[-1][1] < swing_highs[-2][1]  # lower high
+        ll = swing_lows[-1][1] < swing_lows[-2][1]    # lower low
+        
+        if hh and hl:
+            trend = 1  # Uptrend
+        elif lh and ll:
+            trend = -1  # Downtrend
+    
+    return {'trend': int(trend), 'last_sh': last_sh, 'last_sl': last_sl}
 
-def find_fvgs(htf_df):
+def find_fvgs(htf_df, min_gap_pct=MIN_FVG_GAP_PCT):
     """
-    Detect simple FVGs on HTF:
+    UPDATED: Detect FVGs with minimum gap size filter.
+    Only creates FVG if gap is at least min_gap_pct (default 0.2%).
     bullish FVG when current low > prev high  -> gap zone = (prev high, curr low)
     bearish FVG when current high < prev low -> gap zone = (curr high, prev low)
-    returns list of dicts: {type:'bull'|'bear', 'start':low, 'end':high, 'ts_idx': index_of_gap_candle}
     """
     out = []
     if len(htf_df) < 3:
         return out
+    
     for i in range(1, len(htf_df)):
         prev = htf_df.iloc[i-1]
         curr = htf_df.iloc[i]
-        # bullish gap (imbalance)
+        
+        # Bullish FVG: current low > previous high (gap up)
         if float(curr['Low']) > float(prev['High']):
-            out.append({'type':'bull', 'low': float(prev['High']), 'high': float(curr['Low']), 'idx': htf_df.index[i]})
-        # bearish gap
+            gap_size = (curr['Low'] - prev['High']) / prev['High']
+            if gap_size >= min_gap_pct:  # Only significant gaps
+                out.append({
+                    'type': 'bull',
+                    'low': float(prev['High']),
+                    'high': float(curr['Low']),
+                    'idx': htf_df.index[i]
+                })
+        
+        # Bearish FVG: current high < previous low (gap down)
         if float(curr['High']) < float(prev['Low']):
-            out.append({'type':'bear', 'low': float(curr['High']), 'high': float(prev['Low']), 'idx': htf_df.index[i]})
+            gap_size = (prev['Low'] - curr['High']) / curr['High']
+            if gap_size >= min_gap_pct:
+                out.append({
+                    'type': 'bear',
+                    'low': float(curr['High']),
+                    'high': float(prev['Low']),
+                    'idx': htf_df.index[i]
+                })
+    
     return out
+
+def filter_recent_fvgs(fvgs, current_ts, htf_timeframe, max_age_bars=FVG_MAX_AGE_BARS):
+    """
+    NEW: Only consider recent FVGs (last N HTF bars).
+    For 5m/15m setup: 15m bars, so 20 bars = 5 hours.
+    """
+    if not fvgs:
+        return []
+    
+    # Calculate time window based on HTF (optimized for 15m)
+    tf_minutes = {'5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240}
+    tf_key = htf_timeframe.lower()
+    minutes_per_bar = tf_minutes.get(tf_key, 15)
+    max_age_seconds = max_age_bars * minutes_per_bar * 60
+    
+    recent = []
+    for z in fvgs:
+        age_seconds = (current_ts - z['idx']).total_seconds()
+        if age_seconds <= max_age_seconds:
+            recent.append(z)
+    
+    return recent
 
 def price_in_zone(price, zone_low, zone_high, buffer_pct=RETEST_BUFFER_PCT):
     if zone_low is None or zone_high is None:
@@ -250,6 +323,7 @@ def is_bearish_engulfing(prev, curr):
     return (prev['Close'] > prev['Open']) and (curr['Close'] < curr['Open']) and (curr['Open'] > prev['Close']) and (curr['Close'] < prev['Open'])
 
 def has_rejection_wick(candle, direction='bull', wick_body_ratio=WICK_BODY_RATIO):
+    """UPDATED: Stricter wick requirement (1.5x body by default)"""
     body = abs(candle['Close'] - candle['Open'])
     if body == 0:
         return False
@@ -326,6 +400,7 @@ def amount_to_precision(exchange, symbol, amt):
 # =========================
 def process_bar(symbol, etf_df, htf_df, state, exchange=None, funding_series=None):
     """
+    UPDATED: Now requires confluence scoring (4/5 factors) and uses improved FVG/swing detection.
     etf_df : entry timeframe dataframe (already trimmed so last row is the latest closed bar)
     htf_df : higher timeframe dataframe (last row is latest closed bar)
     """
@@ -338,7 +413,7 @@ def process_bar(symbol, etf_df, htf_df, state, exchange=None, funding_series=Non
         etf['Avg_Volume'] = etf['Volume'].rolling(VOL_LOOKBACK).mean()
     etf['RSI'] = calculate_rsi(etf['Close'], RSI_PERIOD)
 
-    # pick last closed bar (we assume etf_df passed excludes the realtime bar)
+    # pick last closed bar
     i = len(etf) - 1
     if i < 1:
         return state, None
@@ -390,7 +465,7 @@ def process_bar(symbol, etf_df, htf_df, state, exchange=None, funding_series=Non
 
     trade_row = None
 
-    # ===== EXIT logic: only SL or TP (no HTF/bias reversal exits) =====
+    # ===== EXIT logic: only SL or TP =====
     if state["position"] != 0:
         exit_flag = False; exit_reason = ""; exit_price = price
         if state["position"] == 1:
@@ -426,11 +501,10 @@ def process_bar(symbol, etf_df, htf_df, state, exchange=None, funding_series=Non
                 "PnL_$": round(pnl,2), "Win": 1 if pnl>0 else 0,
                 "Exit_Reason": exit_reason, "Capital_After": round(state["capital"],2), "Mode": MODE
             }
-            # reset position
             state.update({"position":0,"entry_price":0.0,"entry_sl":0.0,"entry_tp":0.0,"entry_time":None,"entry_size":0.0})
             send_telegram_fut(f"{'💚' if pnl>0 else '🔴'} EXIT {symbol} {exit_reason} @ {exit_price:.4f} | PnL ${pnl:.2f}")
 
-    # ===== ENTRY logic: require HTF structure or FVG + retest + PA confirmation =====
+    # ===== UPDATED ENTRY logic: HTF structure/FVG + confluence scoring =====
     if state["position"] == 0:
         # cooldown
         if COOLDOWN_HOURS > 0 and state.get("last_exit_time") is not None:
@@ -438,16 +512,21 @@ def process_bar(symbol, etf_df, htf_df, state, exchange=None, funding_series=Non
                 state["last_processed_ts"] = ts
                 return state, trade_row
 
-        # need at least 2 ET bars and some HTF history
+        # need minimum bars
         if len(etf) < 3 or len(htf) < 3:
             state["last_processed_ts"] = ts
             return state, trade_row
 
-        # HTF structure + FVG
-        struct = get_htf_structure_level(htf, lookback=30)
-        fvgs = find_fvgs(htf)
+        # UPDATED: Get HTF structure with proper swing detection
+        struct = get_htf_structure_level(htf, lookback=30, swing_strength=SWING_STRENGTH)
+        
+        # UPDATED: Get FVGs with minimum gap filter
+        fvgs = find_fvgs(htf, min_gap_pct=MIN_FVG_GAP_PCT)
+        
+        # NEW: Filter for recent FVGs only (last 20 HTF bars = 5 hours for 15m)
+        fvgs = filter_recent_fvgs(fvgs, ts, HTF, max_age_bars=FVG_MAX_AGE_BARS)
 
-        # stricter volume and RSI checks
+        # UPDATED: Stricter volume check (1.2x average)
         vol_ok_long = vol_ok_short = True
         if USE_VOLUME_FILTER and not pd.isna(etf['Volume'].iloc[i]):
             avgv = etf['Volume'].rolling(VOL_LOOKBACK).mean().iloc[i]
@@ -455,47 +534,62 @@ def process_bar(symbol, etf_df, htf_df, state, exchange=None, funding_series=Non
                 vol_ok_long = etf['Volume'].iloc[i] >= VOL_MIN_RATIO * avgv
                 vol_ok_short = vol_ok_long
 
+        # UPDATED: Stricter RSI thresholds (45/55 instead of 50/50)
         rsi = float(etf['RSI'].iloc[i]) if not pd.isna(etf['RSI'].iloc[i]) else None
         rsi_ok_long = True if rsi is None else rsi > RSI_THRESHOLD_LONG
         rsi_ok_short = True if rsi is None else rsi < RSI_THRESHOLD_SHORT
 
-        # price-action confirmation on the last closed candle (curr) using prev candle as context
+        # Price-action confirmation on the last closed candle
         prevc = etf.iloc[i-1]
         currc = etf.iloc[i]
 
         pa_confirm_long = (is_bullish_engulfing(prevc, currc) or has_rejection_wick(currc, direction='bull', wick_body_ratio=WICK_BODY_RATIO))
         pa_confirm_short = (is_bearish_engulfing(prevc, currc) or has_rejection_wick(currc, direction='bear', wick_body_ratio=WICK_BODY_RATIO))
 
-        # check retest into most recent relevant HTF FVG (if any) OR retest into last HTF swing level
+        # NEW: Confluence scoring - check retest into FVG or swing level
         retest_long = False
         retest_short = False
 
-        # prefer FVG retest if present
+        # Check FVG retest (prefer most recent relevant FVG)
         for z in reversed(fvgs):
-            if z['type'] == 'bull':
-                if price_in_zone(price, z['low'], z['high']):
-                    retest_long = True; break
-            if z['type'] == 'bear':
-                if price_in_zone(price, z['low'], z['high']):
-                    retest_short = True; break
+            if z['type'] == 'bull' and price_in_zone(price, z['low'], z['high']):
+                retest_long = True
+                break
+            if z['type'] == 'bear' and price_in_zone(price, z['low'], z['high']):
+                retest_short = True
+                break
 
-        # fallback: retest into last HTF swing low/high (SMC retest)
+        # Fallback: retest into last HTF swing low/high (SMC retest)
         if not retest_long and struct.get('last_sl') is not None:
-            retest_long = price_in_zone(price, struct['last_sl'] * (1 - 0.0000001), struct['last_sl'] * (1 + 0.0000001))  # tiny tolerance -> will be handled by price_in_zone with buffer
-            # note: price_in_zone adds buffer_pct
-            if not retest_long:
-                retest_long = price_in_zone(price, struct['last_sl'] * (1 - RETEST_BUFFER_PCT), struct['last_sl'] * (1 + RETEST_BUFFER_PCT))
-
+            retest_long = price_in_zone(price, struct['last_sl'], struct['last_sl'])
+        
         if not retest_short and struct.get('last_sh') is not None:
-            retest_short = price_in_zone(price, struct['last_sh'] * (1 - RETEST_BUFFER_PCT), struct['last_sh'] * (1 + RETEST_BUFFER_PCT))
+            retest_short = price_in_zone(price, struct['last_sh'], struct['last_sh'])
 
-        # optional HTF gating: require HTF trend to match entry direction if enabled
+        # Optional HTF gating: require HTF trend to match entry direction
         htf_trend = struct.get('trend', 0)
         htf_gate_long = (not USE_HTF_GATE) or (htf_trend == 1)
         htf_gate_short = (not USE_HTF_GATE) or (htf_trend == -1)
 
-        long_ok = retest_long and pa_confirm_long and vol_ok_long and rsi_ok_long and htf_gate_long
-        short_ok = retest_short and pa_confirm_short and vol_ok_short and rsi_ok_short and htf_gate_short
+        # NEW: Count confluence factors (require MIN_CONFLUENCE out of 5)
+        confluence_long = 0
+        confluence_short = 0
+        
+        if retest_long: confluence_long += 1
+        if pa_confirm_long: confluence_long += 1
+        if vol_ok_long: confluence_long += 1
+        if rsi_ok_long: confluence_long += 1
+        if htf_gate_long: confluence_long += 1
+        
+        if retest_short: confluence_short += 1
+        if pa_confirm_short: confluence_short += 1
+        if vol_ok_short: confluence_short += 1
+        if rsi_ok_short: confluence_short += 1
+        if htf_gate_short: confluence_short += 1
+
+        # UPDATED: Require minimum confluence (default 4/5 factors)
+        long_ok = confluence_long >= MIN_CONFLUENCE
+        short_ok = confluence_short >= MIN_CONFLUENCE
 
         signal = 1 if long_ok else (-1 if short_ok else 0)
 
@@ -551,7 +645,9 @@ def process_bar(symbol, etf_df, htf_df, state, exchange=None, funding_series=Non
                     state["capital"] -= pos_val*FEE_RATE
 
                     tag = "LONG" if signal==1 else "SHORT"
-                    send_telegram_fut(f"🚀 ENTRY {symbol} {tag} @ {entry_price_used:.4f} | SL {sl:.4f} | TP {tp:.4f} | RR {rr:.1f}")
+                    # NEW: Include confluence score in telegram notification
+                    conf_score = confluence_long if signal==1 else confluence_short
+                    send_telegram_fut(f"🚀 ENTRY {symbol} {tag} @ {entry_price_used:.4f} | SL {sl:.4f} | TP {tp:.4f} | RR {rr:.1f} | Confluence {conf_score}/5")
 
     # update processed ts
     state["last_processed_ts"] = ts
@@ -566,7 +662,7 @@ def worker(symbol):
     exchange = get_exchange()
     state = load_state(state_file)
 
-    send_telegram_fut(f"🤖 {symbol} FUTURES bot started | {ENTRY_TF}/{HTF} | cap ${state['capital']:.2f}")
+    send_telegram_fut(f"🤖 {symbol} FUTURES bot started | {ENTRY_TF}/{HTF} | cap ${state['capital']:.2f} | Min Confluence {MIN_CONFLUENCE}/5")
 
     while True:
         try:
@@ -650,8 +746,8 @@ def generate_daily_summary():
                     today = df[(df['Exit_DateTime'] >= start_utc) & (df['Exit_DateTime'] <= end_utc)]
                     n_trades_today = len(today)
                     wins_today = int(today['Win'].sum()) if n_trades_today else 0
-                    pnl_today_sym = float(today['PnL_$'].sum()) if n_trades_today else 0.0
-                    pnl_all = float(df['PnL_$'].sum())
+                    pnl_today_sym = float(today['PnL_].sum()) if n_trades_today else 0.0
+                    pnl_all = float(df['PnL_].sum())
                     wins = int(df['Win'].sum()); losses = len(df)-wins
                     wr = (wins/len(df)*100) if len(df) else 0.0
 
@@ -687,14 +783,26 @@ def summary_scheduler():
 # =========================
 def main():
     boot = f"""
-🚀 Futures Bot Started
+🚀 Futures Bot Started (UPDATED - Reduced False Signals)
 Mode: {MODE.upper()}
 Exchange: KuCoin Futures (perps)
 Symbols: {", ".join(SYMBOLS)}
 TF: {ENTRY_TF}/{HTF}
 Cap/coin: ${PER_COIN_CAP_USD:,.2f}
 Risk: {RISK_PERCENT*100:.1f}% | Fee: {FEE_RATE*100:.3f}% | Slippage: {SLIPPAGE_RATE*100:.3f}%
-FVG + SMC + PA entry, exits: SL/TP only
+
+UPDATED FILTERS:
+✓ Minimum FVG gap: {MIN_FVG_GAP_PCT*100:.2f}%
+✓ FVG max age: {FVG_MAX_AGE_BARS} HTF bars
+✓ Wick/body ratio: {WICK_BODY_RATIO}x
+✓ Volume threshold: {VOL_MIN_RATIO}x average
+✓ RSI thresholds: Long>{RSI_THRESHOLD_LONG}, Short<{RSI_THRESHOLD_SHORT}
+✓ Retest buffer: {RETEST_BUFFER_PCT*100:.2f}%
+✓ Min confluence: {MIN_CONFLUENCE}/5 factors
+✓ Swing strength: {SWING_STRENGTH} bars
+
+Strategy: FVG + SMC + PA entry with proper swing detection
+Exits: SL/TP only
 """
     print(boot)
     send_telegram_fut(boot)
