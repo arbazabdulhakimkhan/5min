@@ -677,8 +677,14 @@ def worker(symbol):
 
             # act on last CLOSED bar (we use -2 index as last closed; we'll pass data trimmed to exclude realtime)
             closed_ts = etf.index[-2]
-            if state["last_processed_ts"] is not None and pd.to_datetime(state["last_processed_ts"]) >= closed_ts:
-                time.sleep(10); continue
+            closed_ts = closed_ts.replace(tzinfo=None)
+            if state["last_processed_ts"] is not None:
+                last_ts = pd.to_datetime(state["last_processed_ts"]).replace(tzinfo=None)
+                closed_ts = closed_ts.replace(tzinfo=None)
+                if last_ts >= closed_ts:
+                    time.sleep(10)
+                    continue
+
 
             # prepare trimmed dfs so last row is last closed bar
             etf_trim = etf.iloc[:-1]  # exclude current forming bar
@@ -742,7 +748,7 @@ def generate_daily_summary():
             if os.path.exists(trades_csv):
                 df = pd.read_csv(trades_csv)
                 if len(df):
-                    df['Exit_DateTime'] = pd.to_datetime(df['Exit_DateTime'], utc=True).dt.tz_convert(None)
+                    df['Exit_DateTime'] = pd.to_datetime(df['Exit_DateTime']).dt.tz_localize(None)
                     today = df[(df['Exit_DateTime'] >= start_utc) & (df['Exit_DateTime'] <= end_utc)]
                     n_trades_today = len(today)
                     wins_today = int(today['Win'].sum()) if n_trades_today else 0
@@ -823,5 +829,6 @@ Exits: SL/TP only
 
 if __name__ == "__main__":
     main()
+
 
 
