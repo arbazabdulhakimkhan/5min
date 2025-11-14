@@ -308,10 +308,12 @@ def state_files_for_symbol(symbol):
 
 def load_state(state_file):
     if os.path.exists(state_file):
-        with open(state_file,"r") as f: s=json.load(f)
-        for k in ["entry_time","last_processed_ts","last_exit_time"]:
+        with open(state_file, "r") as f:
+            s = json.load(f)
+        for k in ["entry_time", "last_processed_ts", "last_exit_time"]:
             if s.get(k):
-                s[k] = pd.to_datetime(s[k])
+                # convert and force tz-naive
+                s[k] = pd.to_datetime(s[k]).replace(tzinfo=None)
         return s
     return {
         "capital": PER_COIN_CAP_USD,
@@ -326,13 +328,16 @@ def load_state(state_file):
         "last_exit_time": None
     }
 
+
 def save_state(state_file, state):
-    s=dict(state)
-    for k in ["entry_time","last_processed_ts","last_exit_time"]:
+    s = dict(state)
+    for k in ["entry_time", "last_processed_ts", "last_exit_time"]:
         if s.get(k) is not None:
-            s[k] = pd.to_datetime(s[k]).isoformat()
-    with open(state_file,"w") as f:
-        json.dump(s,f,indent=2)
+            # ensure naive before isoformat
+            s[k] = pd.to_datetime(s[k]).replace(tzinfo=None).isoformat()
+    with open(state_file, "w") as f:
+        json.dump(s, f, indent=2)
+
 
 def append_trade(csv_file, row):
     write_header = not os.path.exists(csv_file)
@@ -671,18 +676,19 @@ def generate_daily_summary():
             pnl_today_sym=0.0
 
             if os.path.exists(trades_csv):
-                df=pd.read_csv(trades_csv)
+                df = pd.read_csv(trades_csv)
                 if len(df):
-                    df["Exit_DateTime"] = pd.to_datetime(df["Exit_DateTime"]).dt.tz_localize(None)
-
-                    today = df[(df["Exit_DateTime"]>=start_utc) & (df["Exit_DateTime"]<=end_utc)]
+        # robustly convert Exit_DateTime to tz-naive datetimes
+                    df["Exit_DateTime"] = pd.to_datetime(df["Exit_DateTime"]).apply(
+                        lambda x: x.tz_convert(None) if getattr(x, "tzinfo", None) is not None else x.replace(tzinfo=None))
+                    today = df[(df["Exit_DateTime"] >= start_utc) & (df["Exit_DateTime"] <= end_utc)]
 
                     n_trades_today = len(today)
                     wins_today = int(today["Win"].sum()) if n_trades_today else 0
                     pnl_today_sym = float(today["PnL_$"].sum()) if n_trades_today else 0.0
                     pnl_all = float(df["PnL_$"].sum())
-                    wins = int(df["Win"].sum()); losses=len(df)-wins
-                    wr = (wins/len(df)*100) if len(df) else 0.0
+                    wins = int(df["Win"].sum()); losses = len(df) - wins
+                    wr = (wins / len(df) * 100) if len(df) else 0.0
 
             total_cap += cap
             total_init += initial
@@ -750,5 +756,6 @@ Strategy: SMC + FVG + PA with reduced false signals
 
 if __name__=="__main__":
     main()
+
 
 
