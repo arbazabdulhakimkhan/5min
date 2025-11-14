@@ -260,15 +260,25 @@ def find_fvgs(htf_df, min_gap_pct=MIN_FVG_GAP_PCT):
 def filter_recent_fvgs(fvgs, current_ts, htf_timeframe, max_age_bars=FVG_MAX_AGE_BARS):
     if not fvgs:
         return []
-    tf_minutes = {'5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240}
-   (tf_key := htf_timeframe.lower())
+
+    tf_minutes = {
+        "5m": 5,
+        "15m": 15,
+        "30m": 30,
+        "1h": 60,
+        "4h": 240,
+    }
+
+    tf_key = htf_timeframe.lower()
     minutes_per_bar = tf_minutes.get(tf_key, 15)
     max_age_seconds = max_age_bars * minutes_per_bar * 60
+
     recent = []
     for z in fvgs:
-        age_seconds = (current_ts - z['idx']).total_seconds()
+        age_seconds = (current_ts - z["idx"]).total_seconds()
         if age_seconds <= max_age_seconds:
             recent.append(z)
+
     return recent
 
 def price_in_zone(price, zone_low, zone_high, buffer_pct=RETEST_BUFFER_PCT):
@@ -780,3 +790,4 @@ Exits: SL/TP only
 
 if __name__ == "__main__":
     main()
+
