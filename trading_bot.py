@@ -10,58 +10,7 @@ import pandas as pd
 import numpy as np
 import requests
 
-# =========================
-# VARIABLE BLOCK (paste/edit this exactly as .env-style if you want)
-# These are defaults. Real environment variables override them.
-# Example: MODE="paper"
-# =========================
-VAR_BLOCK = """
-MODE="paper"
-SYMBOLS="ARB/USDT:USDT,LINK/USDT:USDT,SOL/USDT:USDT,ETH/USDT:USDT,BTC/USDT:USDT"
-ENTRY_TF="5m"
-HTF="15m"
-LOOKBACK_DAYS="90"
-TOTAL_PORTFOLIO_CAPITAL="10000"
-PER_COIN_ALLOCATION="0.20"
-RISK_PERCENT="0.05"
-MAX_DRAWDOWN="0.20"
-MAX_TRADE_SIZE="100000"
-FEE_RATE="0.0006"
-SLIPPAGE_RATE="0.0005"
-INCLUDE_FUNDING="true"
-RR_FIXED="3.0"
-DYNAMIC_RR="true"
-MIN_RR="4.0"
-MAX_RR="6.0"
-ATR_PERIOD="14"
-ATR_MULT_SL="1.5"
-USE_ATR_STOPS="true"
-USE_HTF_GATE="true"
-USE_VOLUME_FILTER="false"
-VOL_LOOKBACK="20"
-VOL_MIN_RATIO="1.2"
-RSI_PERIOD="6"
-RSI_THRESHOLD_LONG="45"
-RSI_THRESHOLD_SHORT="55"
-RETEST_BUFFER_PCT="0.0015"
-WICK_BODY_RATIO="0.8"
-MIN_FVG_GAP_PCT="0.001"
-FVG_MAX_AGE_BARS="40"
-SWING_STRENGTH="2"
-MIN_CONFLUENCE="3"
-COOLDOWN_HOURS="0"
-TELEGRAM_TOKEN_FUT="8527382686:AAGw74kHBwEW9oYhahUwgLp1hFCjok9pMBw"
-TELEGRAM_CHAT_ID_FUT="677683819"
-SEND_DAILY_SUMMARY="true"
-SUMMARY_HOUR="3"
-KUCOIN_API_KEY=""
-KUCOIN_SECRET=""
-KUCOIN_PASSPHRASE=""
-SLEEP_CAP="60"
-DEBUG_COMPARE="false"
-DEBUG_CSV="debug_signals_live.csv"
-EXCHANGE_ID="kucoinfutures"
-"""
+
 
 # =========================
 # Parse VAR_BLOCK (simple .env parser)
@@ -796,3 +745,4 @@ Funding: {"ON" if INCLUDE_FUNDING else "OFF"}
 
 if __name__ == "__main__":
     main()
+
