@@ -1,27 +1,25 @@
-# bot.py
-import os, time, json, traceback, threading
-from datetime import datetime, timedelta, timezone
+# backtest.py (patched)
+import os
 import ccxt
 import pandas as pd
 import numpy as np
-import requests
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta, timezone
+import time
 
 # =========================
-# CONFIG (env-driven)
+# SHARED CONFIG (ENV-driven) - match trading_bot.py
 # =========================
-MODE = os.getenv("MODE", "paper").lower()
-EXCHANGE_ID = "kucoinfutures"
-SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "ARB/USDT:USDT,LINK/USDT:USDT,SOL/USDT:USDT,ETH/USDT:USDT,BTC/USDT:USDT").split(",") if s.strip()]
-
-ENTRY_TF = os.getenv("ENTRY_TF", "5m")
-HTF = os.getenv("HTF", "15m")
-LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "90"))
+EXCHANGE_ID = os.getenv("EXCHANGE_ID", "kucoinfutures")
+SYMBOL = os.getenv("SYMBOL", "DOGE/USDT:USDT")
+TIMEFRAME_ENTRY = os.getenv("ENTRY_TF", "1h")
+TIMEFRAME_FILTER = os.getenv("HTF", "4h")
+DAYS_BACK = int(os.getenv("DAYS_BACK", "180"))
 
 TOTAL_PORTFOLIO_CAPITAL = float(os.getenv("TOTAL_PORTFOLIO_CAPITAL", "10000"))
 PER_COIN_ALLOCATION = float(os.getenv("PER_COIN_ALLOCATION", "0.20"))
-PER_COIN_CAP_USD = TOTAL_PORTFOLIO_CAPITAL * PER_COIN_ALLOCATION
+INITIAL_CAPITAL = TOTAL_PORTFOLIO_CAPITAL * PER_COIN_ALLOCATION
 
-# strategy
 RISK_PERCENT = float(os.getenv("RISK_PERCENT", "0.02"))
 RR_FIXED = float(os.getenv("RR_FIXED", "5.0"))
 DYNAMIC_RR = os.getenv("DYNAMIC_RR", "true").lower() == "true"
@@ -31,159 +29,89 @@ MAX_RR = float(os.getenv("MAX_RR", "6.0"))
 ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
 ATR_MULT_SL = float(os.getenv("ATR_MULT_SL", "1.5"))
 USE_ATR_STOPS = os.getenv("USE_ATR_STOPS", "true").lower() == "true"
-USE_HTF_GATE = os.getenv("USE_HTF_GATE", "true").lower() == "true"
+USE_H1_FILTER = os.getenv("USE_H1_FILTER", "true").lower() == "true"
 
-# filters - UPDATED FOR LESS FALSE SIGNALS
-USE_VOLUME_FILTER = os.getenv("USE_VOLUME_FILTER", "true").lower() == "true"
+USE_VOLUME_FILTER = os.getenv("USE_VOLUME_FILTER", "false").lower() == "true"
 VOL_LOOKBACK = int(os.getenv("VOL_LOOKBACK", "20"))
-VOL_MIN_RATIO = float(os.getenv("VOL_MIN_RATIO", "1.2"))  # UPDATED: 1.0 -> 1.2
+VOL_MIN_RATIO = float(os.getenv("VOL_MIN_RATIO", "0.5"))
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
-RSI_THRESHOLD_LONG = float(os.getenv("RSI_THRESHOLD_LONG", "45"))  # UPDATED: 50 -> 45
-RSI_THRESHOLD_SHORT = float(os.getenv("RSI_THRESHOLD_SHORT", "55"))  # UPDATED: 50 -> 55
+RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "25"))
+BIAS_CONFIRM_BEAR = int(os.getenv("BIAS_CONFIRM_BEAR", "2"))
 COOLDOWN_HOURS = float(os.getenv("COOLDOWN_HOURS", "0.0"))
 
-# FVG & PA params - UPDATED FOR LESS FALSE SIGNALS
-RETEST_BUFFER_PCT = float(os.getenv("RETEST_BUFFER_PCT", "0.0015"))  # UPDATED: 0.003 -> 0.0015
-WICK_BODY_RATIO = float(os.getenv("WICK_BODY_RATIO", "1.5"))  # UPDATED: 0.6 -> 1.5
-MIN_FVG_GAP_PCT = float(os.getenv("MIN_FVG_GAP_PCT", "0.002"))  # NEW: minimum 0.2% gap
-FVG_MAX_AGE_BARS = int(os.getenv("FVG_MAX_AGE_BARS", "20"))  # NEW: FVG expiry
-MIN_CONFLUENCE = int(os.getenv("MIN_CONFLUENCE", "4"))  # NEW: require 4/5 factors
-SWING_STRENGTH = int(os.getenv("SWING_STRENGTH", "2"))  # NEW: swing detection bars
-
-# risk/fees
 MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "0.20"))
 MAX_TRADE_SIZE = float(os.getenv("MAX_TRADE_SIZE", "100000"))
 SLIPPAGE_RATE = float(os.getenv("SLIPPAGE_RATE", "0.0005"))
 FEE_RATE = float(os.getenv("FEE_RATE", "0.0006"))
 INCLUDE_FUNDING = os.getenv("INCLUDE_FUNDING", "true").lower() == "true"
 
-# telegram
-TELEGRAM_TOKEN_FUT = os.getenv("TELEGRAM_TOKEN_FUT", "")
-TELEGRAM_CHAT_ID_FUT = os.getenv("TELEGRAM_CHAT_ID_FUT", "")
+FUNDING_INTERVAL_HOURS = int(os.getenv("FUNDING_INTERVAL_HOURS", "8"))
+LIQUIDATION_PENALTY_RATE = float(os.getenv("LIQUIDATION_PENALTY_RATE", "0.005"))
+LEVERAGE = float(os.getenv("LEVERAGE", "1.0"))
 
-# kucoin API (live only)
-API_KEY = os.getenv("KUCOIN_API_KEY", "")
-API_SECRET = os.getenv("KUCOIN_SECRET", "")
-API_PASSPHRASE = os.getenv("KUCOIN_PASSPHRASE", "")
-
-# scheduler
-SEND_DAILY_SUMMARY = os.getenv("SEND_DAILY_SUMMARY", "true").lower() == "true"
-SUMMARY_HOUR_IST = int(os.getenv("SUMMARY_HOUR", "20"))
-
-SLEEP_CAP = int(os.getenv("SLEEP_CAP", "60"))
-LOG_PREFIX = "[FUT-BOT]"
-
-if MODE == "live":
-    if not API_KEY or not API_SECRET or not API_PASSPHRASE:
-        raise ValueError("Live mode requires KUCOIN_API_KEY, KUCOIN_SECRET, KUCOIN_PASSPHRASE")
+TRADE_CSV_FILENAME = f"{SYMBOL.replace('/', '_').replace(':','_')}_FUTURES_backtest_trades.csv"
+DEBUG_COMPARE = os.getenv("DEBUG_COMPARE", "false").lower() == "true"
+DEBUG_CSV = os.getenv("DEBUG_CSV", "debug_signals_bt.csv")
 
 # =========================
-# TELEGRAM helpers
-# =========================
-def send_telegram_fut(msg: str):
-    if not TELEGRAM_TOKEN_FUT or not TELEGRAM_CHAT_ID_FUT:
-        return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN_FUT}/sendMessage",
-            data={"chat_id": TELEGRAM_CHAT_ID_FUT, "text": msg},
-            timeout=10
-        )
-    except Exception:
-        pass
-
-# =========================
-# EXCHANGE & DATA
+# HELPERS (same as deploy)
 # =========================
 def get_exchange():
-    if MODE == "live":
-        return ccxt.kucoinfutures({
-            "apiKey": API_KEY,
-            "secret": API_SECRET,
-            "password": API_PASSPHRASE,
-            "enableRateLimit": True,
-            "options": {"defaultType": "swap"},
-        })
-    else:
-        return ccxt.kucoinfutures({
-            "enableRateLimit": True,
-            "options": {"defaultType": "swap"},
-        })
+    return getattr(ccxt, EXCHANGE_ID)({
+        "enableRateLimit": True,
+        "options": {"defaultType": "swap"},
+    })
 
 def timeframe_to_ms(tf: str) -> int:
-    tf = tf.strip().lower()
-    units = {"m": 60000, "h": 3600000, "d": 86400000}
-    n = int(''.join([c for c in tf if c.isdigit()]))
-    u = ''.join([c for c in tf if c.isalpha()])
-    return n * units[u]
+    units = {"m": 60_000, "h": 3_600_000, "d": 86_400_000}
+    num = int(''.join([c for c in tf if c.isdigit()]))
+    unit = ''.join([c for c in tf if c.isalpha()])
+    return num * units[unit]
 
 def fetch_ohlcv_range(exchange, symbol, timeframe, since_ms, until_ms, limit=1500, pause=0.12):
     tf_ms = timeframe_to_ms(timeframe)
-    out, cursor, last = [], since_ms, None
+    out = []
+    cursor = since_ms
+    last_ts = None
     while cursor < until_ms:
         try:
             batch = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=cursor, limit=limit)
         except ccxt.RateLimitExceeded:
-            time.sleep(1); continue
+            time.sleep(1.0); continue
         except Exception as e:
-            print("fetch_ohlcv error:", e); break
-        if not batch: break
+            print(f"fetch_ohlcv error @ {datetime.utcfromtimestamp(cursor/1000)}: {e}")
+            break
+        if not batch:
+            break
         out.extend(batch)
         newest = batch[-1][0]
-        cursor = (newest + tf_ms) if (last is None or newest > last) else cursor + tf_ms
-        last = newest
-        if newest >= until_ms - tf_ms: break
-        time.sleep(pause)
+        if last_ts is not None and newest <= last_ts:
+            cursor += tf_ms
+        else:
+            cursor = newest + tf_ms
+        last_ts = newest
+        if newest >= until_ms - tf_ms:
+            break
+        if pause: time.sleep(pause)
+
     if not out:
         return pd.DataFrame(columns=["Open","High","Low","Close","Volume"])
-    dedup = {r[0]: r for r in out}
-    rows = [dedup[k] for k in sorted(dedup.keys()) if since_ms <= k <= until_ms]
+    seen = {row[0]: row for row in out}
+    rows = [seen[k] for k in sorted(seen.keys()) if since_ms <= k <= until_ms]
     df = pd.DataFrame(rows, columns=["timestamp","Open","High","Low","Close","Volume"])
-    # Use UTC-aware conversion then drop tz (naive) to match your app's conventions
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).dt.tz_convert(None)
     df.set_index("timestamp", inplace=True)
     for c in ["Open","High","Low","Close","Volume"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     return df.dropna()[["Open","High","Low","Close","Volume"]]
 
-# funding
-def fetch_funding_history(exchange, symbol, since_ms, until_ms):
-    rates, cursor = [], since_ms
-    while cursor < until_ms:
-        try:
-            page = exchange.fetchFundingRateHistory(symbol, since=cursor, limit=1000)
-        except Exception as e:
-            print("Funding history error:", e); break
-        if not page: break
-        rates += page
-        newest = page[-1].get('timestamp') or page[-1].get('ts')
-        if newest is None or newest <= cursor: break
-        cursor = newest + 1
-        time.sleep(0.1)
-    if not rates:
-        return pd.DataFrame(columns=["rate"])
-    df = pd.DataFrame([{"ts": r.get('timestamp') or r.get('ts'), "rate": float(r.get('fundingRate', r.get('info',{}).get('fundingRate', 0.0)))} for r in rates if (r.get('timestamp') or r.get('ts')) is not None])
-    df["timestamp"] = pd.to_datetime(df["ts"], unit="ms", utc=True).dt.tz_convert(None)
-    df = df.drop(columns=["ts"]).set_index("timestamp").sort_index()
-    return df[~df.index.duplicated(keep="last")]
-
-def align_funding_to_index(idx, funding_df):
-    s = pd.Series(0.0, index=idx)
-    if funding_df is None or funding_df.empty: return s
-    for ts, row in funding_df.iterrows():
-        j = s.index.searchsorted(ts)
-        if j < len(s): s.iloc[j] = row["rate"]
-    return s
-
-# =========================
-# INDICATORS & HELPERS
-# =========================
 def calculate_rsi(prices, period=14):
     delta = prices.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 def calculate_atr(df, period=14):
     hl = df['High'] - df['Low']
@@ -192,602 +120,556 @@ def calculate_atr(df, period=14):
     tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
     return tr.rolling(period).mean()
 
-def position_size_futures(price, sl, capital, risk_percent, max_trade_size):
+def calculate_futures_position_size(price, sl, capital, risk_percent, max_trade_size):
     risk_per_trade = capital * risk_percent
-    rpc = abs(price - sl)
-    max_by_risk = (risk_per_trade / rpc) if rpc > 0 else 0
+    risk_per_contract = abs(price - sl)
+    max_by_risk = (risk_per_trade / risk_per_contract) if risk_per_contract > 0 else 0
     max_by_capital = capital / price
-    return max(min(max_by_risk, max_by_capital, max_trade_size / price), 0)
+    size_base = min(max_by_risk, max_by_capital, max_trade_size / price)
+    return max(size_base, 0)
 
-# ---------- UPDATED SMC/FVG/PA helpers ----------
-def get_htf_structure_level(htf_df, lookback=30, swing_strength=SWING_STRENGTH):
-    if len(htf_df) < swing_strength * 2 + 1:
-        return {'trend':0, 'last_sh':None, 'last_sl':None}
-    
-    swing_highs = []
-    swing_lows = []
-    
-    for i in range(swing_strength, len(htf_df) - swing_strength):
-        is_swing_high = all(
-            htf_df['High'].iloc[i] > htf_df['High'].iloc[i-j] and
-            htf_df['High'].iloc[i] > htf_df['High'].iloc[i+j]
-            for j in range(1, swing_strength + 1)
-        )
-        if is_swing_high:
-            swing_highs.append((htf_df.index[i], float(htf_df['High'].iloc[i])))
-        
-        is_swing_low = all(
-            htf_df['Low'].iloc[i] < htf_df['Low'].iloc[i-j] and
-            htf_df['Low'].iloc[i] < htf_df['Low'].iloc[i+j]
-            for j in range(1, swing_strength + 1)
-        )
-        if is_swing_low:
-            swing_lows.append((htf_df.index[i], float(htf_df['Low'].iloc[i])))
-    
-    last_sh = swing_highs[-1][1] if swing_highs else None
-    last_sl = swing_lows[-1][1] if swing_lows else None
-    
-    trend = 0
-    if len(swing_highs) >= 2 and len(swing_lows) >= 2:
-        hh = swing_highs[-1][1] > swing_highs[-2][1]
-        hl = swing_lows[-1][1] > swing_lows[-2][1]
-        lh = swing_highs[-1][1] < swing_highs[-2][1]
-        ll = swing_lows[-1][1] < swing_lows[-2][1]
-        if hh and hl:
-            trend = 1
-        elif lh and ll:
-            trend = -1
-    
-    return {'trend': int(trend), 'last_sh': last_sh, 'last_sl': last_sl}
-
-def find_fvgs(htf_df, min_gap_pct=MIN_FVG_GAP_PCT):
-    out = []
-    if len(htf_df) < 3:
-        return out
-    for i in range(1, len(htf_df)):
-        prev = htf_df.iloc[i-1]
-        curr = htf_df.iloc[i]
-        if float(curr['Low']) > float(prev['High']):
-            gap_size = (curr['Low'] - prev['High']) / prev['High']
-            if gap_size >= min_gap_pct:
-                out.append({'type':'bull','low':float(prev['High']),'high':float(curr['Low']),'idx':htf_df.index[i]})
-        if float(curr['High']) < float(prev['Low']):
-            gap_size = (prev['Low'] - curr['High']) / curr['High']
-            if gap_size >= min_gap_pct:
-                out.append({'type':'bear','low':float(curr['High']),'high':float(prev['Low']),'idx':htf_df.index[i]})
-    return out
-
-def filter_recent_fvgs(fvgs, current_ts, htf_timeframe, max_age_bars=FVG_MAX_AGE_BARS):
-    if not fvgs:
-        return []
-
-    tf_minutes = {
-        "5m": 5,
-        "15m": 15,
-        "30m": 30,
-        "1h": 60,
-        "4h": 240,
-    }
-
-    tf_key = htf_timeframe.lower()
-    minutes_per_bar = tf_minutes.get(tf_key, 15)
-    max_age_seconds = max_age_bars * minutes_per_bar * 60
-
-    recent = []
-    for z in fvgs:
-        age_seconds = (current_ts - z["idx"]).total_seconds()
-        if age_seconds <= max_age_seconds:
-            recent.append(z)
-
-    return recent
-
-def price_in_zone(price, zone_low, zone_high, buffer_pct=RETEST_BUFFER_PCT):
-    if zone_low is None or zone_high is None:
-        return False
-    tol = max(zone_high * buffer_pct, 0.0005)
-    return (zone_low - tol) <= price <= (zone_high + tol)
-
-def is_bullish_engulfing(prev, curr):
-    return (prev['Close'] < prev['Open']) and (curr['Close'] > curr['Open']) and (curr['Close'] > prev['Open']) and (curr['Open'] < prev['Close'])
-
-def is_bearish_engulfing(prev, curr):
-    return (prev['Close'] > prev['Open']) and (curr['Close'] < curr['Open']) and (curr['Open'] > prev['Close']) and (curr['Close'] < prev['Open'])
-
-def has_rejection_wick(candle, direction='bull', wick_body_ratio=WICK_BODY_RATIO):
-    body = abs(candle['Close'] - candle['Open'])
-    if body == 0:
-        return False
-    if direction == 'bull':
-        lower_wick = (candle['Open'] - candle['Low']) if candle['Open'] >= candle['Close'] else (candle['Close'] - candle['Low'])
-        return (lower_wick / body) >= wick_body_ratio
-    else:
-        upper_wick = (candle['High'] - candle['Open']) if candle['Open'] <= candle['Close'] else (candle['High'] - candle['Close'])
-        return (upper_wick / body) >= wick_body_ratio
-
-# =========================
-# STATE & FILES
-# =========================
-def state_files_for_symbol(symbol: str):
-    tag = "fut_" + symbol.replace("/", "_").replace(":", "_")
-    return f"state_{tag}.json", f"{tag}_trades.csv"
-
-def load_state(state_file):
-    if os.path.exists(state_file):
-        with open(state_file, "r") as f:
-            s = json.load(f)
-        for k in ["entry_time", "last_processed_ts", "last_exit_time"]:
-            if s.get(k):
-                # parse into tz-naive UTC (consistent)
-                s[k] = pd.to_datetime(s[k], utc=True).tz_convert(None)
-        return s
-    return {
-        "capital": PER_COIN_CAP_USD,
-        "position": 0,
-        "entry_price": 0.0,
-        "entry_sl": 0.0,
-        "entry_tp": 0.0,
-        "entry_time": None,
-        "entry_size": 0.0,
-        "peak_equity": PER_COIN_CAP_USD,
-        "last_processed_ts": None,
-        "last_exit_time": None
-    }
-
-def save_state(state_file, state):
-    s = dict(state)
-    for k in ["entry_time", "last_processed_ts", "last_exit_time"]:
-        if s.get(k) is not None:
-            # store as ISO (naive iso produced by pandas-to-datetime then removed tz)
-            s[k] = pd.to_datetime(s[k]).tz_localize(None).isoformat()
-    with open(state_file, "w") as f:
-        json.dump(s, f, indent=2)
-
-def append_trade(csv_file, row):
-    write_header = not os.path.exists(csv_file)
-    pd.DataFrame([row]).to_csv(csv_file, mode="a", header=write_header, index=False)
-
-# =========================
-# LIVE ORDER HELPERS
-# =========================
-def place_market(exchange, symbol, side, amount, reduce_only=False):
-    params = {"reduceOnly": True} if reduce_only else {}
-    return exchange.create_order(symbol, type="market", side=side, amount=amount, params=params)
-
-def avg_fill_price(order):
-    p = order.get("average") or order.get("price")
-    if p: return float(p)
-    if "trades" in order and order["trades"]:
-        notional = 0.0; qty = 0.0
-        for t in order["trades"]:
-            pr = float(t["price"]); am = float(t["amount"])
-            notional += pr*am; qty += am
-        if qty > 0: return notional / qty
-    return None
-
+# amount_to_precision (match deploy)
 def amount_to_precision(exchange, symbol, amt):
-    return float(exchange.amount_to_precision(symbol, amt))
+    try:
+        return float(exchange.amount_to_precision(symbol, amt))
+    except Exception:
+        return float(round(amt, 8))
 
-# =========================
-# CORE PER-BAR PROCESSOR
-# =========================
-def process_bar(symbol, etf_df, htf_df, state, exchange=None, funding_series=None):
-    etf = etf_df.copy(); htf = htf_df.copy()
+# funding helpers (match deploy)
+def fetch_funding_history(exchange, symbol, since_ms, until_ms):
+    rates = []
+    cursor = since_ms
+    while cursor < until_ms:
+        try:
+            page = exchange.fetchFundingRateHistory(symbol, since=cursor, limit=1000)
+        except Exception as e:
+            print(f"Funding history fetch error (fallback to none): {e}")
+            break
+        if not page:
+            break
+        rates.extend(page)
+        newest = page[-1].get('timestamp') or page[-1].get('ts')
+        if newest is None or newest <= cursor:
+            break
+        cursor = newest + 1
+        time.sleep(0.1)
 
-    if USE_ATR_STOPS:
-        etf['ATR'] = calculate_atr(etf, ATR_PERIOD)
-    if USE_VOLUME_FILTER:
-        etf['Avg_Volume'] = etf['Volume'].rolling(VOL_LOOKBACK).mean()
-    etf['RSI'] = calculate_rsi(etf['Close'], RSI_PERIOD)
+    if not rates:
+        return pd.DataFrame(columns=["timestamp","rate"])
 
-    i = len(etf) - 1
-    if i < 1:
-        return state, None
+    df = pd.DataFrame([{"timestamp": r['timestamp'], "rate": float(r.get('fundingRate', r.get('info', {}).get('fundingRate', 0.0)))} for r in rates])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).dt.tz_convert(None)
+    df.set_index("timestamp", inplace=True)
+    df = df[~df.index.duplicated(keep='last')]
+    return df.sort_index()
 
-    curr = etf.iloc[i]
-    prev = etf.iloc[i-1]
-    price = float(curr['Close'])
-    ts = etf.index[i]  # tz-naive (we ensured earlier)
+def align_funding_schedule(h1_index, funding_df):
+    if funding_df is None or funding_df.empty:
+        return pd.Series(0.0, index=h1_index)
+    funding_series = pd.Series(0.0, index=h1_index)
+    for ts, row in funding_df.iterrows():
+        idx = funding_series.index.searchsorted(ts)
+        if idx < len(funding_series):
+            funding_series.iloc[idx] = row["rate"]
+    return funding_series
 
-    # funding impact when holding
-    if INCLUDE_FUNDING and state["position"] != 0 and funding_series is not None:
-        rate = float(funding_series.iloc[i]) if i < len(funding_series) else 0.0
-        if rate != 0.0 and state.get("entry_price") and state.get("entry_size"):
-            notional = abs(state["entry_price"] * state["entry_size"])
-            fee = notional * rate * (1 if state["position"] == 1 else -1) * (-1)
-            state["capital"] += fee
+def fetch_leverage_tiers(exchange, symbol):
+    try:
+        tiers = exchange.fetchLeverageTiers([symbol])[symbol]
+        out = []
+        for t in tiers:
+            out.append({
+                "floor": float(t.get("minNotional", t.get("tierFloor", 0.0))),
+                "cap": float(t.get("maxNotional", t.get("tierCap", float('inf')))),
+                "mmr": float(t.get("maintenanceMarginRate", t.get("maintenanceRate", 0.005)))
+            })
+        out.sort(key=lambda x: x["floor"])
+        return out
+    except Exception as e:
+        print(f"Leverage tiers fetch failed (using default mmr 0.005): {e}")
+        return [{"floor": 0.0, "cap": float('inf'), "mmr": 0.005}]
 
-    # update peak equity
-    state["peak_equity"] = max(state["peak_equity"], state["capital"])
-    if state["peak_equity"] > 0:
-        dd = (state["peak_equity"] - state["capital"]) / state["peak_equity"]
+def get_mmr_for_notional(tiers, notional):
+    for t in tiers:
+        if t["floor"] <= notional <= t["cap"]:
+            return t["mmr"]
+    return tiers[-1]["mmr"]
+
+def estimate_liquidation_bounds(entry_price, notional, position_side, mmr, leverage=1.0):
+    imr = 1.0 / leverage
+    frac = max(imr - mmr, 0.0)
+    if position_side == 1:
+        liq_price = entry_price * (1.0 - frac)
+        return liq_price, None
     else:
-        dd = 0.0
+        liq_price = entry_price * (1.0 + frac)
+        return None, liq_price
 
-    # forced exit on global drawdown
-    if dd >= MAX_DRAWDOWN and state["position"] != 0:
-        side = "sell" if state["position"] == 1 else "buy"
+# =========================
+# FETCH DATA
+# =========================
+exchange = get_exchange()
+
+now_utc = datetime.now(timezone.utc)
+since_dt = now_utc - timedelta(days=DAYS_BACK)
+until_dt = now_utc
+since_ms = int(since_dt.timestamp() * 1000)
+until_ms = int(until_dt.timestamp() * 1000)
+
+print(f"⏱ Fetching {TIMEFRAME_ENTRY} and {TIMEFRAME_FILTER} for {SYMBOL}: {since_dt} → {until_dt} (UTC)")
+h1 = fetch_ohlcv_range(exchange, SYMBOL, TIMEFRAME_ENTRY, since_ms, until_ms, limit=1500, pause=0.12)
+h4 = fetch_ohlcv_range(exchange, SYMBOL, TIMEFRAME_FILTER, since_ms, until_ms, limit=1500, pause=0.12)
+if h1.empty or h4.empty:
+    raise ValueError(f"No futures data from exchange for {SYMBOL}. h1 empty: {h1.empty}, h4 empty: {h4.empty}")
+print(f"✅ Loaded {len(h1)} (1h) and {len(h4)} (4h) bars")
+
+funding_df = None
+if INCLUDE_FUNDING:
+    print("⏱ Fetching funding rate history…")
+    funding_df = fetch_funding_history(exchange, SYMBOL, since_ms, until_ms)
+    if funding_df is None or funding_df.empty:
+        print("⚠️ No funding history returned; funding will be 0.")
+funding_series = align_funding_schedule(h1.index, funding_df)
+
+tiers = fetch_leverage_tiers(exchange, SYMBOL)
+
+# =========================
+# INDICATORS
+# =========================
+h1['Bias'] = 0
+h1.loc[h1['Close'] > h1['Close'].shift(1), 'Bias'] = 1
+h1.loc[h1['Close'] < h1['Close'].shift(1), 'Bias'] = -1
+
+h4['Trend'] = 0
+h4.loc[h4['Close'] > h4['Close'].shift(1), 'Trend'] = 1
+h4.loc[h4['Close'] < h4['Close'].shift(1), 'Trend'] = -1
+
+h1['H4_Trend'] = h4['Trend'].reindex(h1.index, method='ffill').fillna(0).astype(int)
+
+if USE_ATR_STOPS:
+    h1['ATR'] = calculate_atr(h1, ATR_PERIOD)
+
+if USE_VOLUME_FILTER:
+    h1['Avg_Volume'] = h1['Volume'].rolling(window=VOL_LOOKBACK).mean()
+
+h1['RSI'] = calculate_rsi(h1['Close'], RSI_PERIOD)
+
+# Drop last open candle - same as deploy
+if len(h1) >= 2:
+    h1_closed = h1.iloc[:-1].copy()
+else:
+    h1_closed = h1.copy()
+if len(h4) >= 2:
+    h4_closed = h4.iloc[:-1].copy()
+else:
+    h4_closed = h4.copy()
+
+# =========================
+# Entry Signals (1 = long, -1 = short)
+# =========================
+h1_closed['Entry_Signal'] = 0
+for i in range(1, len(h1_closed)):
+    price = h1_closed['Close'].iat[i]
+    open_price = h1_closed['Open'].iat[i]
+    prev_close = h1_closed['Close'].iat[i-1]
+    h4_trend = h1_closed['H4_Trend'].iat[i]
+
+    bullish_sweep = (price > open_price) and (price > prev_close)
+    vol_ok_long = True
+    if USE_VOLUME_FILTER and not pd.isna(h1_closed['Avg_Volume'].iat[i]):
+        vol_ok_long = h1_closed['Volume'].iat[i] >= VOL_MIN_RATIO * h1_closed['Avg_Volume'].iat[i]
+    rsi_ok_long = True if pd.isna(h1_closed['RSI'].iat[i]) else (h1_closed['RSI'].iat[i] > RSI_OVERSOLD)
+    h4_ok_long = (not USE_H1_FILTER) or (h4_trend == 1)
+
+    bearish_sweep = (price < open_price) and (price < prev_close)
+    vol_ok_short = True
+    if USE_VOLUME_FILTER and not pd.isna(h1_closed['Avg_Volume'].iat[i]):
+        vol_ok_short = h1_closed['Volume'].iat[i] >= VOL_MIN_RATIO * h1_closed['Avg_Volume'].iat[i]
+    rsi_ok_short = True if pd.isna(h1_closed['RSI'].iat[i]) else (h1_closed['RSI'].iat[i] < (100 - RSI_OVERSOLD))
+    h4_ok_short = (not USE_H1_FILTER) or (h4_trend == -1)
+
+    if bullish_sweep and vol_ok_long and rsi_ok_long and h4_ok_long:
+        h1_closed.iat[i, h1_closed.columns.get_loc('Entry_Signal')] = 1
+    elif bearish_sweep and vol_ok_short and rsi_ok_short and h4_ok_short:
+        h1_closed.iat[i, h1_closed.columns.get_loc('Entry_Signal')] = -1
+
+# =========================
+# Backtest engine (close-based SL/TP + funding + liquidation)
+# =========================
+capital = INITIAL_CAPITAL
+position = 0
+entry_price = entry_sl = entry_tp = 0.0
+entry_time = None
+entry_size = 0.0
+bias_flip_count = 0
+permanently_stopped = False
+
+liq_lower = None
+liq_upper = None
+entry_notional = 0.0
+
+trades = []
+equity_curve = []
+peak_equity = INITIAL_CAPITAL
+
+print("\n" + "="*70)
+print("⚙️  FUTURES BACKTEST — Backtest with same rules as deploy")
+print("="*70)
+
+# iterate over closed bars
+for i in range(len(h1_closed)):
+    ts = h1_closed.index[i]
+    price = float(h1_closed['Close'].iat[i])
+    signal = int(h1_closed['Entry_Signal'].iat[i])
+    bias = int(h1_closed['Bias'].iat[i])
+    h4_trend = int(h1_closed['H4_Trend'].iat[i])
+
+    # funding application
+    if INCLUDE_FUNDING and position != 0:
+        rate = float(funding_series.loc[ts]) if ts in funding_series.index and not pd.isna(funding_series.loc[ts]) else 0.0
+        if rate != 0.0:
+            fee = entry_notional * rate * (1 if position == 1 else -1) * (-1)
+            capital += fee
+
+    # drawdown check
+    if equity_curve:
+        peak_equity = max(peak_equity, capital)
+        curr_dd = (peak_equity - capital) / peak_equity if peak_equity > 0 else 0.0
+        if curr_dd >= MAX_DRAWDOWN and not permanently_stopped:
+            permanently_stopped = True
+            print(f"\n🛑 PERMANENT STOP at {ts} | DD: {curr_dd*100:.2f}%")
+            if position != 0:
+                exit_price = price
+                gross_pnl = entry_size * (exit_price - entry_price) * (1 if position == 1 else -1)
+                position_value = abs(exit_price * entry_size)
+                exit_slippage = position_value * SLIPPAGE_RATE
+                exit_fee = position_value * FEE_RATE
+                net_pnl = gross_pnl - exit_slippage - exit_fee
+                capital += net_pnl
+                trades.append({
+                    'Trade_ID': len(trades) + 1,
+                    'Entry_DateTime': entry_time,
+                    'Exit_DateTime': ts,
+                    'Position': 'Long' if position==1 else 'Short',
+                    'Entry_Price': round(entry_price, 6),
+                    'Exit_Price': round(exit_price, 6),
+                    'Take_Profit': round(entry_tp, 6),
+                    'Stop_Loss': round(entry_sl, 6),
+                    'Position_Size_Base': round(entry_size, 8),
+                    'PnL_$': round(net_pnl, 2),
+                    'Win': 1 if net_pnl > 0 else 0,
+                    'Exit_Reason': 'MAX DRAWDOWN',
+                    'Capital_After': round(capital, 2)
+                })
+                position = 0
+                liq_lower = liq_upper = None
+                entry_notional = 0.0
+
+    # liquidation check (very conservative for 1x)
+    if position != 0 and not permanently_stopped:
+        if position == 1 and liq_lower is not None and price <= liq_lower:
+            position_value = abs(price * entry_size)
+            penalty = position_value * LIQUIDATION_PENALTY_RATE
+            gross_pnl = entry_size * (price - entry_price)
+            net_pnl = gross_pnl - penalty
+            capital += net_pnl
+            trades.append({
+                'Trade_ID': len(trades) + 1,
+                'Entry_DateTime': entry_time,
+                'Exit_DateTime': ts,
+                'Position': 'Long',
+                'Entry_Price': round(entry_price, 6),
+                'Exit_Price': round(price, 6),
+                'Take_Profit': round(entry_tp, 6),
+                'Stop_Loss': round(entry_sl, 6),
+                'Position_Size_Base': round(entry_size, 8),
+                'PnL_$': round(net_pnl, 2),
+                'Win': 1 if net_pnl > 0 else 0,
+                'Exit_Reason': 'LIQUIDATION',
+                'Capital_After': round(capital, 2)
+            })
+            position = 0
+            liq_lower = liq_upper = None
+            entry_notional = 0.0
+
+        elif position == -1 and liq_upper is not None and price >= liq_upper:
+            position_value = abs(price * entry_size)
+            penalty = position_value * LIQUIDATION_PENALTY_RATE
+            gross_pnl = entry_size * (entry_price - price)
+            net_pnl = gross_pnl - penalty
+            capital += net_pnl
+            trades.append({
+                'Trade_ID': len(trades) + 1,
+                'Entry_DateTime': entry_time,
+                'Exit_DateTime': ts,
+                'Position': 'Short',
+                'Entry_Price': round(entry_price, 6),
+                'Exit_Price': round(price, 6),
+                'Take_Profit': round(entry_tp, 6),
+                'Stop_Loss': round(entry_sl, 6),
+                'Position_Size_Base': round(entry_size, 8),
+                'PnL_$': round(net_pnl, 2),
+                'Win': 1 if net_pnl > 0 else 0,
+                'Exit_Reason': 'LIQUIDATION',
+                'Capital_After': round(capital, 2)
+            })
+            position = 0
+            liq_lower = liq_upper = None
+            entry_notional = 0.0
+
+    # normal exit logic
+    if position != 0 and not permanently_stopped:
+        exit_flag = False
         exit_price = price
-        if MODE == "live":
-            try:
-                order = place_market(exchange, symbol, side, amount_to_precision(exchange, symbol, state["entry_size"]), reduce_only=True)
-                exit_price = float(avg_fill_price(order) or price)
-            except Exception as e:
-                send_telegram_fut(f"❌ {symbol} forced-exit failed: {e}")
-        gross = state["entry_size"] * (exit_price - state["entry_price"]) * (1 if state["position"]==1 else -1)
-        pos_val = abs(exit_price * state["entry_size"])
-        pnl = gross - pos_val*SLIPPAGE_RATE - pos_val*FEE_RATE
-        state["capital"] += pnl
-        row = {
-            "Symbol": symbol, "Entry_DateTime": state["entry_time"],
-            "Exit_DateTime": ts, "Position": "Long" if state["position"]==1 else "Short",
-            "Entry_Price": round(state["entry_price"],6), "Exit_Price": round(exit_price,6),
-            "Take_Profit": round(state["entry_tp"],6), "Stop_Loss": round(state["entry_sl"],6),
-            "Position_Size_Base": round(state["entry_size"],8),
-            "PnL_$": round(pnl,2), "Win": 1 if pnl>0 else 0,
-            "Exit_Reason": "MAX_DRAWDOWN", "Capital_After": round(state["capital"],2), "Mode": MODE
-        }
-        state.update({"position":0,"entry_price":0.0,"entry_sl":0.0,"entry_tp":0.0,"entry_time":None,"entry_size":0.0})
-        return state, row
+        exit_reason = ""
 
-    trade_row = None
-
-    # ===== EXIT logic: only SL or TP =====
-    if state["position"] != 0:
-        exit_flag = False; exit_reason = ""; exit_price = price
-        if state["position"] == 1:
-            if price >= state["entry_tp"]:
-                exit_flag, exit_price, exit_reason = True, state["entry_tp"], "Take Profit"
-            elif price <= state["entry_sl"]:
-                exit_flag, exit_price, exit_reason = True, state["entry_sl"], "Stop Loss"
+        if position == 1:
+            if price >= entry_tp:
+                exit_flag, exit_price, exit_reason = True, entry_tp, "Take Profit"
+                bias_flip_count = 0
+            elif price <= entry_sl:
+                exit_flag, exit_price, exit_reason = True, entry_sl, "Stop Loss"
+                bias_flip_count = 0
+            elif USE_H1_FILTER and (h4_trend < 0 and bias < 0):
+                exit_flag, exit_price, exit_reason = True, price, "4H Trend Reversal"
+                bias_flip_count = 0
+            elif bias < 0:
+                bias_flip_count += 1
+                if bias_flip_count >= BIAS_CONFIRM_BEAR:
+                    exit_flag, exit_price, exit_reason = True, price, "Bias Reversal"
+                    bias_flip_count = 0
+            else:
+                bias_flip_count = 0
         else:
-            if price <= state["entry_tp"]:
-                exit_flag, exit_price, exit_reason = True, state["entry_tp"], "Take Profit"
-            elif price >= state["entry_sl"]:
-                exit_flag, exit_price, exit_reason = True, state["entry_sl"], "Stop Loss"
+            if price <= entry_tp:
+                exit_flag, exit_price, exit_reason = True, entry_tp, "Take Profit"
+                bias_flip_count = 0
+            elif price >= entry_sl:
+                exit_flag, exit_price, exit_reason = True, entry_sl, "Stop Loss"
+                bias_flip_count = 0
+            elif USE_H1_FILTER and (h4_trend > 0 and bias > 0):
+                exit_flag, exit_price, exit_reason = True, price, "4H Trend Reversal"
+                bias_flip_count = 0
+            elif bias > 0:
+                bias_flip_count += 1
+                if bias_flip_count >= BIAS_CONFIRM_BEAR:
+                    exit_flag, exit_price, exit_reason = True, price, "Bias Reversal"
+                    bias_flip_count = 0
+            else:
+                bias_flip_count = 0
 
         if exit_flag:
-            side = "sell" if state["position"]==1 else "buy"
-            if MODE == "live":
-                try:
-                    order = place_market(exchange, symbol, side, amount_to_precision(exchange, symbol, state["entry_size"]), reduce_only=True)
-                    exit_price = float(avg_fill_price(order) or price)
-                except Exception as e:
-                    send_telegram_fut(f"❌ {symbol} exit failed: {e}")
-            gross = state["entry_size"] * (exit_price - state["entry_price"]) * (1 if state["position"]==1 else -1)
-            pos_val = abs(exit_price * state["entry_size"])
-            pnl = gross - pos_val*SLIPPAGE_RATE - pos_val*FEE_RATE
-            state["capital"] += pnl
+            gross_pnl = entry_size * (exit_price - entry_price) * (1 if position == 1 else -1)
+            position_value = abs(exit_price * entry_size)
+            exit_slippage = position_value * SLIPPAGE_RATE
+            exit_fee = position_value * FEE_RATE
+            net_pnl = gross_pnl - exit_slippage - exit_fee
+            capital += net_pnl
 
-            trade_row = {
-                "Symbol": symbol, "Entry_DateTime": state["entry_time"],
-                "Exit_DateTime": ts, "Position": "Long" if state["position"]==1 else "Short",
-                "Entry_Price": round(state["entry_price"],6), "Exit_Price": round(exit_price,6),
-                "Take_Profit": round(state["entry_tp"],6), "Stop_Loss": round(state["entry_sl"],6),
-                "Position_Size_Base": round(state["entry_size"],8),
-                "PnL_$": round(pnl,2), "Win": 1 if pnl>0 else 0,
-                "Exit_Reason": exit_reason, "Capital_After": round(state["capital"],2), "Mode": MODE
-            }
-            state.update({"position":0,"entry_price":0.0,"entry_sl":0.0,"entry_tp":0.0,"entry_time":None,"entry_size":0.0})
-            send_telegram_fut(f"{'💚' if pnl>0 else '🔴'} EXIT {symbol} {exit_reason} @ {exit_price:.4f} | PnL ${pnl:.2f}")
+            trades.append({
+                'Trade_ID': len(trades) + 1,
+                'Entry_DateTime': entry_time,
+                'Exit_DateTime': ts,
+                'Position': 'Long' if position==1 else 'Short',
+                'Entry_Price': round(entry_price, 6),
+                'Exit_Price': round(exit_price, 6),
+                'Take_Profit': round(entry_tp, 6),
+                'Stop_Loss': round(entry_sl, 6),
+                'Position_Size_Base': round(entry_size, 8),
+                'PnL_$': round(net_pnl, 2),
+                'Win': 1 if net_pnl > 0 else 0,
+                'Exit_Reason': exit_reason,
+                'Capital_After': round(capital, 2)
+            })
 
-    # ===== UPDATED ENTRY logic: HTF structure/FVG + confluence scoring =====
-    if state["position"] == 0:
-        # cooldown - ensure both sides naive
-        if COOLDOWN_HOURS > 0 and state.get("last_exit_time") is not None:
-            try:
-                last_exit_ts = pd.to_datetime(state["last_exit_time"], utc=True).tz_convert(None) if state.get("last_exit_time") is not None else None
-                if last_exit_ts is not None and (ts - last_exit_ts).total_seconds() / 3600 < COOLDOWN_HOURS:
-                    state["last_processed_ts"] = ts
-                    return state, trade_row
-            except Exception:
-                # if anything weird, skip cooldown
-                pass
+            position = 0
+            entry_price = entry_sl = entry_tp = 0.0
+            entry_time = None
+            entry_size = 0.0
+            liq_lower = liq_upper = None
+            entry_notional = 0.0
 
-        # need minimum bars
-        if len(etf) < 3 or len(htf) < 3:
-            state["last_processed_ts"] = ts
-            return state, trade_row
+    # entry logic (on closed bars)
+    if position == 0 and not permanently_stopped and signal != 0:
+        if USE_ATR_STOPS:
+            atr_val = h1_closed['ATR'].iat[i]
+            if pd.isna(atr_val) or atr_val <= 0:
+                equity_curve.append(capital)
+                continue
 
-        struct = get_htf_structure_level(htf, lookback=30, swing_strength=SWING_STRENGTH)
-        fvgs = find_fvgs(htf, min_gap_pct=MIN_FVG_GAP_PCT)
-        fvgs = filter_recent_fvgs(fvgs, ts, HTF, max_age_bars=FVG_MAX_AGE_BARS)
+        if signal == 1:
+            sl = price - (ATR_MULT_SL * h1_closed['ATR'].iat[i]) if USE_ATR_STOPS else price * (1 - min(max(price*0.0005,0.0005),0.0015))
+            risk = abs(price - sl)
+            if risk <= 0:
+                equity_curve.append(capital); continue
 
-        vol_ok_long = vol_ok_short = True
-        if USE_VOLUME_FILTER and not pd.isna(etf['Volume'].iloc[i]):
-            avgv = etf['Volume'].rolling(VOL_LOOKBACK).mean().iloc[i]
-            if not pd.isna(avgv):
-                vol_ok_long = etf['Volume'].iloc[i] >= VOL_MIN_RATIO * avgv
-                vol_ok_short = vol_ok_long
+            rr_ratio = RR_FIXED
+            if DYNAMIC_RR and USE_ATR_STOPS and not pd.isna(h1_closed['ATR'].iat[i]) and i >= 6:
+                recent_atr = float(h1_closed['ATR'].iloc[i-5:i].mean())
+                current_atr = float(h1_closed['ATR'].iat[i])
+                if recent_atr > 0:
+                    if current_atr > recent_atr * 1.2: rr_ratio = MIN_RR
+                    elif current_atr < recent_atr * 0.8: rr_ratio = MAX_RR
+            tp = price + rr_ratio * risk
 
-        rsi = float(etf['RSI'].iloc[i]) if not pd.isna(etf['RSI'].iloc[i]) else None
-        rsi_ok_long = True if rsi is None else rsi > RSI_THRESHOLD_LONG
-        rsi_ok_short = True if rsi is None else rsi < RSI_THRESHOLD_SHORT
+            size_base = calculate_futures_position_size(price, sl, capital, RISK_PERCENT, MAX_TRADE_SIZE)
+            # quantize to exchange precision (match deploy)
+            size_q = amount_to_precision(exchange, SYMBOL, size_base)
+            if size_q <= 0:
+                equity_curve.append(capital)
+                continue
 
-        prevc = etf.iloc[i-1]
-        currc = etf.iloc[i]
+            position = 1
+            entry_price, entry_sl, entry_tp, entry_time, entry_size = price, sl, tp, ts, size_q
+            position_value = abs(entry_price * entry_size)
+            entry_slippage = position_value * SLIPPAGE_RATE
+            entry_fee = position_value * FEE_RATE
+            capital -= (entry_slippage + entry_fee)
 
-        pa_confirm_long = (is_bullish_engulfing(prevc, currc) or has_rejection_wick(currc, direction='bull', wick_body_ratio=WICK_BODY_RATIO))
-        pa_confirm_short = (is_bearish_engulfing(prevc, currc) or has_rejection_wick(currc, direction='bear', wick_body_ratio=WICK_BODY_RATIO))
+            entry_notional = position_value
+            mmr = get_mmr_for_notional(tiers, entry_notional)
+            liq_lower, liq_upper = estimate_liquidation_bounds(entry_price, entry_notional, 1, mmr, leverage=LEVERAGE)
 
-        retest_long = False
-        retest_short = False
+            # debug compare
+            if DEBUG_COMPARE:
+                line = f"{SYMBOL},{ts},{signal},{price},{sl},{tp},{size_base},{size_q},{rr_ratio},{h1_closed['ATR'].iat[i] if 'ATR' in h1_closed.columns else ''},{h1_closed['RSI'].iat[i]}\n"
+                with open(DEBUG_CSV, "a") as f:
+                    f.write(line)
 
-        for z in reversed(fvgs):
-            if z['type'] == 'bull' and price_in_zone(price, z['low'], z['high']):
-                retest_long = True
-                break
-            if z['type'] == 'bear' and price_in_zone(price, z['low'], z['high']):
-                retest_short = True
-                break
+        elif signal == -1:
+            sl = price + (ATR_MULT_SL * h1_closed['ATR'].iat[i]) if USE_ATR_STOPS else price * (1 + min(max(price*0.0005,0.0005),0.0015))
+            risk = abs(sl - price)
+            if risk <= 0:
+                equity_curve.append(capital); continue
 
-        if not retest_long and struct.get('last_sl') is not None:
-            retest_long = price_in_zone(price, struct['last_sl'], struct['last_sl'])
-        if not retest_short and struct.get('last_sh') is not None:
-            retest_short = price_in_zone(price, struct['last_sh'], struct['last_sh'])
+            rr_ratio = RR_FIXED
+            if DYNAMIC_RR and USE_ATR_STOPS and not pd.isna(h1_closed['ATR'].iat[i]) and i >= 6:
+                recent_atr = float(h1_closed['ATR'].iloc[i-5:i].mean())
+                current_atr = float(h1_closed['ATR'].iat[i])
+                if recent_atr > 0:
+                    if current_atr > recent_atr * 1.2: rr_ratio = MIN_RR
+                    elif current_atr < recent_atr * 0.8: rr_ratio = MAX_RR
+            tp = price - rr_ratio * risk
 
-        htf_trend = struct.get('trend', 0)
-        htf_gate_long = (not USE_HTF_GATE) or (htf_trend == 1)
-        htf_gate_short = (not USE_HTF_GATE) or (htf_trend == -1)
+            size_base = calculate_futures_position_size(price, sl, capital, RISK_PERCENT, MAX_TRADE_SIZE)
+            size_q = amount_to_precision(exchange, SYMBOL, size_base)
+            if size_q <= 0:
+                equity_curve.append(capital)
+                continue
 
-        confluence_long = confluence_short = 0
-        if retest_long: confluence_long += 1
-        if pa_confirm_long: confluence_long += 1
-        if vol_ok_long: confluence_long += 1
-        if rsi_ok_long: confluence_long += 1
-        if htf_gate_long: confluence_long += 1
+            position = -1
+            entry_price, entry_sl, entry_tp, entry_time, entry_size = price, sl, tp, ts, size_q
+            position_value = abs(entry_price * entry_size)
+            entry_slippage = position_value * SLIPPAGE_RATE
+            entry_fee = position_value * FEE_RATE
+            capital -= (entry_slippage + entry_fee)
 
-        if retest_short: confluence_short += 1
-        if pa_confirm_short: confluence_short += 1
-        if vol_ok_short: confluence_short += 1
-        if rsi_ok_short: confluence_short += 1
-        if htf_gate_short: confluence_short += 1
+            entry_notional = position_value
+            mmr = get_mmr_for_notional(tiers, entry_notional)
+            liq_lower, liq_upper = estimate_liquidation_bounds(entry_price, entry_notional, -1, mmr, leverage=LEVERAGE)
 
-        long_ok = confluence_long >= MIN_CONFLUENCE
-        short_ok = confluence_short >= MIN_CONFLUENCE
+            if DEBUG_COMPARE:
+                line = f"{SYMBOL},{ts},{signal},{price},{sl},{tp},{size_base},{size_q},{rr_ratio},{h1_closed['ATR'].iat[i] if 'ATR' in h1_closed.columns else ''},{h1_closed['RSI'].iat[i]}\n"
+                with open(DEBUG_CSV, "a") as f:
+                    f.write(line)
 
-        signal = 1 if long_ok else (-1 if short_ok else 0)
-
-        if signal != 0 and (not USE_ATR_STOPS or (USE_ATR_STOPS and not pd.isna(etf['ATR'].iloc[i]) and etf['ATR'].iloc[i] > 0)):
-            if signal == 1:
-                sl = price - (ATR_MULT_SL * etf['ATR'].iloc[i]) if USE_ATR_STOPS else price * (1 - min(max(price*0.0005,0.0005),0.0015))
-                risk = abs(price - sl)
-                rr = RR_FIXED
-                if DYNAMIC_RR and USE_ATR_STOPS and i >= 6:
-                    recent = float(etf['ATR'].iloc[i-5:i].mean())
-                    curr_atr = float(etf['ATR'].iloc[i])
-                    if recent > 0:
-                        if curr_atr > recent*1.2: rr = MIN_RR
-                        elif curr_atr < recent*0.8: rr = MAX_RR
-                tp = price + rr * risk
-            else:
-                sl = price + (ATR_MULT_SL * etf['ATR'].iloc[i]) if USE_ATR_STOPS else price * (1 + min(max(price*0.0005,0.0005),0.0015))
-                risk = abs(sl - price)
-                rr = RR_FIXED
-                if DYNAMIC_RR and USE_ATR_STOPS and i >= 6:
-                    recent = float(etf['ATR'].iloc[i-5:i].mean())
-                    curr_atr = float(etf['ATR'].iloc[i])
-                    if recent > 0:
-                        if curr_atr > recent*1.2: rr = MIN_RR
-                        elif curr_atr < recent*0.8: rr = MAX_RR
-                tp = price - rr * risk
-
-            if risk > 0:
-                size = position_size_futures(price, sl, state["capital"], RISK_PERCENT, MAX_TRADE_SIZE)
-                if size > 0:
-                    entry_price_used = price
-                    side = "buy" if signal==1 else "sell"
-                    if MODE == "live":
-                        try:
-                            size = amount_to_precision(exchange, symbol, size)
-                            order = place_market(exchange, symbol, side, size, reduce_only=False)
-                            ep = avg_fill_price(order)
-                            if ep is not None: entry_price_used = float(ep)
-                        except Exception as e:
-                            send_telegram_fut(f"❌ {symbol} entry failed: {e}")
-                            state["last_processed_ts"] = ts
-                            return state, trade_row
-
-                    state["position"] = 1 if signal==1 else -1
-                    state["entry_price"] = entry_price_used
-                    state["entry_sl"] = sl
-                    state["entry_tp"] = tp
-                    state["entry_time"] = ts
-                    state["entry_size"] = size
-
-                    pos_val = abs(entry_price_used * size)
-                    state["capital"] -= pos_val*SLIPPAGE_RATE
-                    state["capital"] -= pos_val*FEE_RATE
-
-                    tag = "LONG" if signal==1 else "SHORT"
-                    conf_score = confluence_long if signal==1 else confluence_short
-                    send_telegram_fut(f"🚀 ENTRY {symbol} {tag} @ {entry_price_used:.4f} | SL {sl:.4f} | TP {tp:.4f} | RR {rr:.1f} | Confluence {conf_score}/5")
-
-    # update processed ts
-    state["last_processed_ts"] = ts
-    state["peak_equity"] = max(state["peak_equity"], state["capital"])
-    return state, trade_row
+    equity_curve.append(capital)
 
 # =========================
-# WORKER (one per symbol)
+# RESULTS
 # =========================
-def worker(symbol):
-    state_file, trades_csv = state_files_for_symbol(symbol)
-    exchange = get_exchange()
-    state = load_state(state_file)
+trades_df = pd.DataFrame(trades)
 
-    send_telegram_fut(f"🤖 {symbol} FUTURES bot started | {ENTRY_TF}/{HTF} | cap ${state['capital']:.2f} | Min Confluence {MIN_CONFLUENCE}/5")
+equity_curve_np = np.array(equity_curve)
+if len(equity_curve_np):
+    peak_equity_curve = np.maximum.accumulate(equity_curve_np)
+    drawdown_array = (peak_equity_curve - equity_curve_np) / np.where(peak_equity_curve==0,1,peak_equity_curve) * 100
+    max_drawdown = float(np.max(drawdown_array))
+else:
+    drawdown_array = np.array([0.0])
+    max_drawdown = 0.0
 
-    while True:
-        try:
-            # use timezone-aware now, but keep OHLC indexes tz-naive: convert properly for math
-            now = datetime.now(timezone.utc)
-            since = now - timedelta(days=LOOKBACK_DAYS)
-            since_ms = int(since.timestamp()*1000); until_ms = int(now.timestamp()*1000)
+if not trades_df.empty:
+    wins = int(trades_df['Win'].sum())
+    losses = int(len(trades_df) - wins)
+    win_rate = (wins / len(trades_df) * 100.0)
+    total_pnl = float(trades_df['PnL_$'].sum())
+    final_capital = capital
 
-            etf = fetch_ohlcv_range(exchange, symbol, ENTRY_TF, since_ms, until_ms)
-            htf = fetch_ohlcv_range(exchange, symbol, HTF, since_ms, until_ms)
-            if etf.empty or htf.empty or len(etf) < 3:
-                time.sleep(30); continue
+    exit_counts = trades_df['Exit_Reason'].value_counts()
 
-            # act on last CLOSED bar (we use -2 index as last closed; we'll pass data trimmed to exclude realtime)
-            # etf.index are tz-naive datetimes (we ensured earlier)
-            closed_ts = etf.index[-2]
+    print("\n" + "="*70)
+    print("✅ FUTURES BACKTEST RESULTS")
+    print("="*70)
+    print(f"Symbol:              {SYMBOL}")
+    print(f"Period:              {h1_closed.index[0]} to {h1_closed.index[-1]}")
+    print(f"Initial Capital:     ${INITIAL_CAPITAL:,.2f}")
+    print(f"Final Capital:       ${final_capital:,.2f}")
+    print(f"Total PnL:           ${total_pnl:,.2f}")
+    print(f"Return:              {((final_capital/INITIAL_CAPITAL)-1)*100:.2f}%")
+    print(f"Total Trades:        {len(trades_df)}")
+    print(f"Wins:                {wins} ({win_rate:.1f}%)")
+    print(f"Losses:              {losses}")
+    print(f"Max Drawdown:        {max_drawdown:.2f}%")
+    print(f"Permanently Stopped: {'YES 🛑' if permanently_stopped else 'NO ✅'}")
 
-            if state["last_processed_ts"] is not None:
-                # parse stored state ts into tz-naive UTC then compare
-                last_ts = pd.to_datetime(state["last_processed_ts"], utc=True).tz_convert(None) if state.get("last_processed_ts") is not None else None
-                if last_ts is not None and last_ts >= closed_ts:
-                    time.sleep(10); continue
+    print("\n📊 EXIT BREAKDOWN:")
+    for reason, count in exit_counts.items():
+        pct = (count / len(trades_df)) * 100
+        print(f"  {reason:20s}: {count:3d} trades ({pct:5.1f}%)")
 
-            # prepare trimmed dfs so last row is last closed bar
-            etf_trim = etf.iloc[:-1]  # exclude current forming bar
-            htf_trim = htf.iloc[:-1]
+    trades_df.to_csv(TRADE_CSV_FILENAME, index=False)
+    print(f"\n💾 Trades saved to: {TRADE_CSV_FILENAME}")
 
-            funding_series = None
-            if INCLUDE_FUNDING:
-                fdf = fetch_funding_history(exchange, symbol, int(etf_trim.index[0].timestamp()*1000), int(etf_trim.index[-1].timestamp()*1000))
-                funding_series = align_funding_to_index(etf_trim.index, fdf) if (fdf is not None and not fdf.empty) else pd.Series(0.0, index=etf_trim.index)
-
-            state, trade = process_bar(symbol, etf_trim, htf_trim, state, exchange=exchange, funding_series=funding_series)
-            if trade is not None:
-                append_trade(trades_csv, trade)
-
-            save_state(state_file, state)
-
-            # sleep to just after next bar close (ENTRY_TF cadence)
-            next_close = etf.index[-1] + (etf.index[-1] - etf.index[-2])  # tz-naive
-
-            # make next_close timezone-aware UTC for safe subtract with now_utc
-            if getattr(next_close, "tzinfo", None) is None:
-                next_close = next_close.replace(tzinfo=timezone.utc)
-
-            now_utc = datetime.now(timezone.utc)
-            sleep_sec = (next_close - now_utc).total_seconds() + 5
-            if sleep_sec < 5: sleep_sec = 5
-            if sleep_sec > 3600: sleep_sec = SLEEP_CAP
-            time.sleep(sleep_sec)
-
-        except ccxt.RateLimitExceeded:
-            time.sleep(10)
-        except Exception as e:
-            msg = f"{LOG_PREFIX} {symbol} ERROR: {e}"
-            print(msg)
-            traceback.print_exc()
-            send_telegram_fut(msg)
-            time.sleep(30)
+else:
+    print("\n❌ No trades executed.")
+    final_capital = INITIAL_CAPITAL
 
 # =========================
-# DAILY SUMMARY (IST)
+# PLOTS
 # =========================
-def ist_now():
-    return datetime.now(timezone(timedelta(hours=5, minutes=30)))
+plt.figure(figsize=(15,10))
 
-def generate_daily_summary():
-    try:
-        now_ist = ist_now()
-        start_ist = datetime(now_ist.year, now_ist.month, now_ist.day, 0,0,0, tzinfo=now_ist.tzinfo)
-        end_ist = datetime(now_ist.year, now_ist.month, now_ist.day, 23,59,59, tzinfo=now_ist.tzinfo)
-        start_utc = start_ist.astimezone(timezone.utc).replace(tzinfo=None)
-        end_utc = end_ist.astimezone(timezone.utc).replace(tzinfo=None)
+plt.subplot(2,1,1)
+plt.plot(h1.index, h1['Close'], label='Price', linewidth=1)
 
-        lines = [f"📊 FUTURES DAILY SUMMARY — {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}", "-"*60]
-        total_cap = total_init = pnl_today = n_today = w_today = 0.0
+if not trades_df.empty:
+    long_entries = trades_df[trades_df['Position'] == 'Long']
+    short_entries = trades_df[trades_df['Position'] == 'Short']
+    if not long_entries.empty:
+        plt.scatter(long_entries['Entry_DateTime'], long_entries['Entry_Price'], marker='^', label='Long Entry', s=80, zorder=5)
+    if not short_entries.empty:
+        plt.scatter(short_entries['Entry_DateTime'], short_entries['Entry_Price'], marker='v', label='Short Entry', s=80, zorder=5)
 
-        for sym in SYMBOLS:
-            state_file, trades_csv = state_files_for_symbol(sym)
-            state = load_state(state_file) if os.path.exists(state_file) else {"capital": PER_COIN_CAP_USD, "position":0}
-            cap = float(state.get("capital", PER_COIN_CAP_USD))
-            initial = PER_COIN_CAP_USD
+    for exit_type, color, marker in [
+        ('Take Profit', 'blue', 'o'),
+        ('Stop Loss', 'red', 'x'),
+        ('4H Trend Reversal', 'orange', 's'),
+        ('Bias Reversal', 'purple', 'd'),
+        ('LIQUIDATION', 'black', 'X'),
+        ('MAX DRAWDOWN', 'black', 'X')
+    ]:
+        exits = trades_df[trades_df['Exit_Reason'] == exit_type]
+        if not exits.empty:
+            plt.scatter(exits['Exit_DateTime'], exits['Exit_Price'], marker=marker, label=f'{exit_type}', s=70, zorder=5)
 
-            wins = losses = wr = 0.0
-            pnl_all = 0.0
-            n_trades_today = wins_today = 0
-            pnl_today_sym = 0.0
+plt.title(f"{SYMBOL} Perps — Futures Backtest (Long+Short, 1x)")
+plt.xlabel("Date")
+plt.ylabel("Price")
+plt.legend(loc='best')
+plt.grid(True, alpha=0.3)
 
-            if os.path.exists(trades_csv):
-                df = pd.read_csv(trades_csv)
-                if len(df):
-                    # robust conversion to naive UTC (handles both tz-aware and naive strings)
-                    df['Exit_DateTime'] = pd.to_datetime(df['Exit_DateTime'], utc=True, errors='coerce').dt.tz_convert(None)
-                    today = df[(df['Exit_DateTime'] >= start_utc) & (df['Exit_DateTime'] <= end_utc)]
-                    n_trades_today = len(today)
-                    wins_today = int(today['Win'].sum()) if n_trades_today else 0
-                    pnl_today_sym = float(today["PnL_$"].sum()) if n_trades_today else 0.0
-                    pnl_all = float(df["PnL_$"].sum()) if "PnL_$" in df.columns else 0.0
-                    wins = int(df['Win'].sum()) if 'Win' in df.columns else 0
-                    losses = len(df)-wins if len(df) else 0
-                    wr = (wins/len(df)*100) if len(df) else 0.0
+plt.subplot(2,1,2)
+equity_dates = h1_closed.index[:len(equity_curve)]
+plt.plot(equity_dates, equity_curve, label='Equity', linewidth=2)
+plt.axhline(y=INITIAL_CAPITAL, linestyle='--', label='Initial Capital')
+plt.title("Equity Curve")
+plt.xlabel("Date")
+plt.ylabel("Capital ($)")
+plt.legend()
+plt.grid(True, alpha=0.3)
 
-            total_cap += cap; total_init += initial
-            pnl_today += pnl_today_sym; n_today += n_trades_today; w_today += wins_today
-            roi = ((cap/initial)-1)*100 if initial>0 else 0.0
+plt.tight_layout()
+plt.show()
 
-            lines.append(f"{sym}: cap ${cap:,.2f} ({roi:+.2f}%) | today {n_trades_today} trades, {wins_today} wins | PnL ${pnl_today_sym:+.2f} | all WR {wr:.1f}%")
-
-        port_roi = ((total_cap/total_init)-1)*100 if total_init>0 else 0.0
-        wr_today = (w_today/n_today*100) if n_today>0 else 0.0
-        lines += ["-"*60, f"TOTAL: cap ${total_cap:,.2f} ({port_roi:+.2f}%) | today {n_today} trades | WR {wr_today:.1f}% | PnL ${pnl_today:+.2f}"]
-        msg = "\n".join(lines)
-        print(msg)
-        send_telegram_fut(msg)
-    except Exception as e:
-        send_telegram_fut(f"❌ summary error: {e}")
-
-def summary_scheduler():
-    last_sent_date = None
-    while True:
-        try:
-            now = ist_now()
-            if now.hour == SUMMARY_HOUR_IST and (last_sent_date is None or last_sent_date != now.date()):
-                generate_daily_summary()
-                last_sent_date = now.date()
-            time.sleep(60)
-        except Exception:
-            time.sleep(60)
-
-# =========================
-# MAIN
-# =========================
-def main():
-    boot = f"""
-🚀 Futures Bot Started (UPDATED - Reduced False Signals)
-Mode: {MODE.upper()}
-Exchange: KuCoin Futures (perps)
-Symbols: {", ".join(SYMBOLS)}
-TF: {ENTRY_TF}/{HTF}
-Cap/coin: ${PER_COIN_CAP_USD:,.2f}
-Risk: {RISK_PERCENT*100:.1f}% | Fee: {FEE_RATE*100:.3f}% | Slippage: {SLIPPAGE_RATE*100:.3f}%
-
-UPDATED FILTERS:
-✓ Minimum FVG gap: {MIN_FVG_GAP_PCT*100:.2f}%
-✓ FVG max age: {FVG_MAX_AGE_BARS} HTF bars
-✓ Wick/body ratio: {WICK_BODY_RATIO}x
-✓ Volume threshold: {VOL_MIN_RATIO}x average
-✓ RSI thresholds: Long>{RSI_THRESHOLD_LONG}, Short<{RSI_THRESHOLD_SHORT}
-✓ Retest buffer: {RETEST_BUFFER_PCT*100:.2f}%
-✓ Min confluence: {MIN_CONFLUENCE}/5 factors
-✓ Swing strength: {SWING_STRENGTH} bars
-
-Strategy: FVG + SMC + PA entry with proper swing detection
-Exits: SL/TP only
-"""
-    print(boot)
-    send_telegram_fut(boot)
-
-    threads = []
-    for sym in SYMBOLS:
-        t = threading.Thread(target=worker, args=(sym,), daemon=True)
-        t.start(); threads.append(t)
-        time.sleep(1)
-
-    if SEND_DAILY_SUMMARY:
-        s = threading.Thread(target=summary_scheduler, daemon=True)
-        s.start(); threads.append(s)
-
-    print(f"✅ Running {len(threads)} threads…")
-    while True:
-        time.sleep(3600)
-
-if __name__ == "__main__":
-    main()
-
+print("\n✅ FUTURES BACKTEST COMPLETE.")
