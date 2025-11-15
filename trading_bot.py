@@ -21,7 +21,7 @@ LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "180"))
 TOTAL_PORTFOLIO_CAPITAL = float(os.getenv("TOTAL_PORTFOLIO_CAPITAL", "10000"))
 PER_COIN_ALLOCATION = float(os.getenv("PER_COIN_ALLOCATION", "0.20"))
 # strategy (same as your spot logic, mirrored for short)
-RISK_PERCENT = float(os.getenv("RISK_PERCENT", "0.02"))
+RISK_PERCENT = float(os.getenv("RISK_PERCENT", "0.05"))
 RR_FIXED = float(os.getenv("RR_FIXED", "5.0"))
 DYNAMIC_RR = os.getenv("DYNAMIC_RR", "true").lower() == "true"
 MIN_RR = float(os.getenv("MIN_RR", "4.0"))
@@ -752,4 +752,5 @@ Funding: {"ON" if INCLUDE_FUNDING else "OFF"} | Trailing: {"ON" if USE_TRAILING 
 
 if __name__ == "__main__":
     main()
+
 
