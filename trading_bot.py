@@ -1,4 +1,4 @@
-# trading_bot.py — final deploy-ready with variable block (paste into repo)
+# trading_bot.py — final deploy-ready with clean variable block
 import os
 import time
 import json
@@ -10,11 +10,66 @@ import pandas as pd
 import numpy as np
 import requests
 
+# =========================
+# VARIABLE BLOCK (edit this block or set real env vars; real env vars override these)
+# Keep it in KEY="value" style if you want to paste as .env
+# =========================
+VAR_BLOCK = """
+MODE="paper"
+EXCHANGE_ID="kucoinfutures"
+SYMBOLS="ARB/USDT:USDT,LINK/USDT:USDT,SOL/USDT:USDT,ETH/USDT:USDT,BTC/USDT:USDT"
+ENTRY_TF="1h"
+HTF="4h"
+LOOKBACK_DAYS="90"
 
+TOTAL_PORTFOLIO_CAPITAL="10000"
+PER_COIN_ALLOCATION="0.20"
+
+RISK_PERCENT="0.02"
+RR_FIXED="5.0"
+DYNAMIC_RR="true"
+MIN_RR="4.0"
+MAX_RR="6.0"
+
+ATR_PERIOD="14"
+ATR_MULT_SL="1.5"
+USE_ATR_STOPS="true"
+
+USE_HTF_GATE="true"
+USE_VOLUME_FILTER="false"
+VOL_LOOKBACK="20"
+VOL_MIN_RATIO="0.5"
+
+RSI_PERIOD="14"
+RSI_THRESHOLD_LONG="25"
+RSI_THRESHOLD_SHORT="75"
+
+BIAS_CONFIRM_BEAR="2"
+COOLDOWN_HOURS="0"
+
+MAX_DRAWDOWN="0.20"
+MAX_TRADE_SIZE="100000"
+SLIPPAGE_RATE="0.0005"
+FEE_RATE="0.0006"
+INCLUDE_FUNDING="true"
+
+TELEGRAM_TOKEN_FUT="8527382686:AAGw74kHBwEW9oYhahUwgLp1hFCjok9pMBw"
+TELEGRAM_CHAT_ID_FUT="677683819"
+
+SEND_DAILY_SUMMARY="true"
+SUMMARY_HOUR="20"  # IST hour for summary
+
+KUCOIN_API_KEY=""
+KUCOIN_SECRET=""
+KUCOIN_PASSPHRASE=""
+
+SLEEP_CAP="60"
+DEBUG_COMPARE="false"
+DEBUG_CSV="debug_signals_live.csv"
+"""
 
 # =========================
-# Parse VAR_BLOCK (simple .env parser)
-# Real OS environment variables override these defaults.
+# Simple .env-style parser
 # =========================
 def parse_env_block(block: str):
     d = {}
@@ -27,7 +82,6 @@ def parse_env_block(block: str):
         k, v = line.split("=", 1)
         k = k.strip()
         v = v.strip()
-        # remove surrounding quotes if present
         if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
             v = v[1:-1]
         d[k] = v
@@ -35,20 +89,17 @@ def parse_env_block(block: str):
 
 _defaults = parse_env_block(VAR_BLOCK)
 
-def parse_value(key: str, raw: str):
-    """Try to convert raw strings into int/float/bool when appropriate, else return string."""
+def parse_value(raw: str):
     if raw is None:
         return None
     low = raw.lower()
     if low in ("true", "false"):
         return low == "true"
-    # ints
     try:
         if raw.isdigit():
             return int(raw)
     except Exception:
         pass
-    # floats
     try:
         if "." in raw:
             return float(raw)
@@ -57,15 +108,14 @@ def parse_value(key: str, raw: str):
     return raw
 
 def get_var(name: str, default=None):
-    # priority: real env > defaults from VAR_BLOCK > explicit default
     if name in os.environ:
-        return parse_value(name, os.environ[name])
+        return parse_value(os.environ[name])
     if name in _defaults:
-        return parse_value(name, _defaults[name])
+        return parse_value(_defaults[name])
     return default
 
 # =========================
-# CONFIG (from vars)
+# CONFIG (resolved from vars)
 # =========================
 MODE = str(get_var("MODE", "paper")).lower()
 EXCHANGE_ID = str(get_var("EXCHANGE_ID", "kucoinfutures"))
@@ -73,7 +123,7 @@ SYMBOLS = [s.strip() for s in str(get_var("SYMBOLS", "")).split(",") if s.strip(
 
 ENTRY_TF = str(get_var("ENTRY_TF", "1h"))
 HTF = str(get_var("HTF", "4h"))
-LOOKBACK_DAYS = int(get_var("LOOKBACK_DAYS", 180))
+LOOKBACK_DAYS = int(get_var("LOOKBACK_DAYS", 90))
 
 TOTAL_PORTFOLIO_CAPITAL = float(get_var("TOTAL_PORTFOLIO_CAPITAL", 10000.0))
 PER_COIN_ALLOCATION = float(get_var("PER_COIN_ALLOCATION", 0.20))
@@ -88,13 +138,14 @@ MAX_RR = float(get_var("MAX_RR", 6.0))
 ATR_PERIOD = int(get_var("ATR_PERIOD", 14))
 ATR_MULT_SL = float(get_var("ATR_MULT_SL", 1.5))
 USE_ATR_STOPS = bool(get_var("USE_ATR_STOPS", True))
-USE_H1_FILTER = bool(get_var("USE_HTF_GATE", True))  # HTF gate name mapped
 
+USE_H1_FILTER = bool(get_var("USE_HTF_GATE", True))
 USE_VOLUME_FILTER = bool(get_var("USE_VOLUME_FILTER", False))
 VOL_LOOKBACK = int(get_var("VOL_LOOKBACK", 20))
 VOL_MIN_RATIO = float(get_var("VOL_MIN_RATIO", 0.5))
+
 RSI_PERIOD = int(get_var("RSI_PERIOD", 14))
-RSI_OVERSOLD = float(get_var("RSI_THRESHOLD_LONG", 25))  # mapping names
+RSI_OVERSOLD = float(get_var("RSI_THRESHOLD_LONG", 25))
 RSI_OVERBOUGHT = float(get_var("RSI_THRESHOLD_SHORT", 75))
 
 BIAS_CONFIRM_BEAR = int(get_var("BIAS_CONFIRM_BEAR", 2))
@@ -236,7 +287,7 @@ def align_funding_to_index(idx, funding_df):
     return s
 
 # =========================
-# INDICATORS & MATH
+# INDICATORS
 # =========================
 def calculate_rsi(prices, period=14):
     delta = prices.diff()
@@ -745,4 +796,3 @@ Funding: {"ON" if INCLUDE_FUNDING else "OFF"}
 
 if __name__ == "__main__":
     main()
-
