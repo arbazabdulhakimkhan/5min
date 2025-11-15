@@ -54,7 +54,7 @@ TRAIL_AT_PCT = float(os.getenv("TRAIL_AT_PCT", "0.5"))  # Activate at 50% to TP
 TRAIL_ATR_MULT = float(os.getenv("TRAIL_ATR_MULT", "1.0"))
 # telegram (separate bot for futures)
 TELEGRAM_TOKEN_FUT = os.getenv("TELEGRAM_TOKEN_FUT", "8527382686:AAGw74kHBwEW9oYhahUwgLp1hFCjok9pMBw")
-TELEGRAM_CHAT_ID_FUT = os.getenv("TELEGRAM_CHAT_ID_FUT", "")
+TELEGRAM_CHAT_ID_FUT = os.getenv("TELEGRAM_CHAT_ID_FUT", "677683819")
 # kucoin futures keys (live only)
 API_KEY = os.getenv("KUCOIN_API_KEY", "")
 API_SECRET = os.getenv("KUCOIN_SECRET", "")
@@ -752,3 +752,4 @@ Funding: {"ON" if INCLUDE_FUNDING else "OFF"} | Trailing: {"ON" if USE_TRAILING 
 
 if __name__ == "__main__":
     main()
+
