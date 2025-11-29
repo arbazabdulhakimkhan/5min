@@ -924,4 +924,3 @@ Rotation: every {ROTATION_INTERVAL_HOURS:.1f} hours (aggressive)
 
 if __name__ == "__main__":
     main()
-
